@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>合成招生目录</title></head>
+<body>
+<!-- 合成 fixture：院系、导师、方向均为虚构。结构照搬清华研招目录的 rowspan 写法。 -->
+<table id="zsml-table">
+  <tr>
+    <th>院系、专业、研究方向</th><th>导师姓名</th><th>招生说明</th>
+  </tr>
+  <tr>
+    <td colspan="2"><h5>024 某系</h5></td>
+    <td><textarea readonly="readonly">联系方式：example</textarea></td>
+  </tr>
+  <tr>
+    <td style="padding-left: 20px;" colspan="2">
+      <h6><span><span>081200 （学术学位） 计算机科学与技术</span></span></h6>
+    </td>
+    <td><textarea readonly="readonly"></textarea></td>
+  </tr>
+  <tr>
+    <td style="padding-left: 40px;vertical-align: middle;" rowspan="3">
+      01（全日制）高性能计算
+    </td>
+    <td style="text-align: center;vertical-align: middle;">张三</td>
+    <td></td>
+    <tr>
+      <td style="text-align: center;vertical-align: middle;">
+        <a href="javaScript:void(0);" class="dsinfo" title="点击查看导师风采">李四</a>
+      </td>
+      <td>不招收直博生</td>
+    </tr>
+    <tr>
+      <td style="text-align: center;vertical-align: middle;">王五</td>
+      <td></td>
+    </tr>
+  </tr>
+  <tr>
+    <td style="padding-left: 20px;" colspan="2">
+      <h6><span><span>140500 （学术学位） 智能科学与技术</span></span></h6>
+    </td>
+    <td><textarea readonly="readonly"></textarea></td>
+  </tr>
+  <tr>
+    <td style="padding-left: 40px;vertical-align: middle;" rowspan="2">
+      02（全日制）人工智能（强基）
+      </br><span class="label label-info">仅推免</span>
+    </td>
+    <td style="text-align: center;vertical-align: middle;">赵六</td>
+    <td></td>
+    <tr>
+      <td style="text-align: center;vertical-align: middle;">导师组</td>
+      <td>不招收直博生</td>
+    </tr>
+  </tr>
+</table>
+</body>
+</html>

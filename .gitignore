@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.env
+
+# 工具缓存
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# 学生材料与抓取结果：一律不入库（隐私）
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+data/index/*
+!data/index/.gitkeep
+*.pdf
+*.docx
+*.xlsx
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 本地日志（只记行为，不记内容；仍然不入库）
+logs/
