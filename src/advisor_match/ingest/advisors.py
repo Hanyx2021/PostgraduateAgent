@@ -123,11 +123,13 @@ def _sections(content) -> dict[str, list[str]]:
             continue
         text = node.get_text(" ", strip=True)
         # 有些页面用 <p><strong>标题</strong></p> 代替 h4。
+        # 以冒号结尾的加粗段落也是标题（如"承担及完成的重要科研项目:"）。
         strong = node.find("strong")
-        if strong is not None and text == strong.get_text(" ", strip=True) and len(text) <= 12:
-            current = text
-            sections.setdefault(current, [])
-            continue
+        if strong is not None and text == strong.get_text(" ", strip=True):
+            if len(text) <= 20 or text.endswith((":", "：")):
+                current = text
+                sections.setdefault(current, [])
+                continue
         sections.setdefault(current, []).append(text)
     return sections
 
@@ -147,8 +149,10 @@ def parse_profile(html: str) -> ProfileInfo:
     for line in sections.get("研究领域", []):
         for tag in _TAG_SPLIT.split(line):
             tag = tag.strip()
-            if tag:
+            # 研究方向是一个短语；长句说明标题漏识别，宁可丢弃也不当标签。
+            if tag and len(tag) <= 40 and not tag.endswith((":", "：")):
                 areas.append(tag)
+    areas = areas[:15]
 
     homepage = None
     for paragraph in content.find_all("p"):
@@ -189,6 +193,12 @@ def _throttle() -> None:
     _last_request_at = time.monotonic()
 
 
+def cache_path(cache_dir: Path, url: str) -> Path:
+    """原始页面的本地缓存路径。同一 URL 永远落到同一文件，便于离线重解析。"""
+    digest = hashlib.sha1(url.encode("utf-8")).hexdigest()[:12]
+    return cache_dir / f"{digest}.html"
+
+
 def fetch_page(url: str, *, cache_dir: Path | None = None) -> str:
     """抓取一个页面，返回 HTML。命中反爬页时抛 ``BlockedError``。"""
     _throttle()
@@ -201,8 +211,7 @@ def fetch_page(url: str, *, cache_dir: Path | None = None) -> str:
 
     if cache_dir is not None:
         cache_dir.mkdir(parents=True, exist_ok=True)
-        digest = hashlib.sha1(url.encode("utf-8")).hexdigest()[:12]
-        (cache_dir / f"{digest}.html").write_text(html, encoding="utf-8")
+        cache_path(cache_dir, url).write_text(html, encoding="utf-8")
         with (cache_dir / "index.jsonl").open("a", encoding="utf-8") as handle:
             handle.write(json.dumps({"url": url, "fetched_at": date.today().isoformat()}, ensure_ascii=False) + "\n")
     return html

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from advisor_match.ingest.papers import ParsedDocument
+from advisor_match.ingest.pdf import ParsedDocument
 
 
 def parse_resume(path: Path, *, doc_id: str = "resume") -> ParsedDocument:
