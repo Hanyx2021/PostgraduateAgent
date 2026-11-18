@@ -45,6 +45,11 @@ def _with_period(text: str) -> str:
     return text if text.endswith(("。", "！", "？", ".", "!", "?")) else f"{text}。"
 
 
+def _teacher_name(name: str) -> str:
+    """称呼拼接：已经是"X老师"的不再补一次，避免"李老师老师"。"""
+    return name if name.endswith("老师") else f"{name}老师"
+
+
 def _bigrams(text: str) -> set[str]:
     cleaned = re.sub(r"[\s，。；：、,.;:!?（）()]", "", text)
     return {cleaned[index : index + 2] for index in range(len(cleaned) - 1)}
@@ -82,14 +87,16 @@ def _template_draft(
     greeting = EmailParagraph(
         role="greeting",
         sentences=[
-            _sentence(f"尊敬的{contact.display_name}老师：您好！", kind="greeting"),
+            _sentence(f"尊敬的{_teacher_name(contact.display_name)}：您好！", kind="greeting"),
             _sentence("我是准备申请推免的本科生，冒昧写信向您请教。", kind="greeting"),
         ],
     )
 
     fit_sentences: list[EmailSentence] = []
     for point_text, record_id in match_student_points(student_points or [], ledger):
-        fit_sentences.append(_sentence(point_text, kind="fact", refs=[record_id]))
+        fit_sentences.append(
+            _sentence(_with_period(point_text), kind="fact", refs=[record_id])
+        )
     for point in match.match_points:
         prefix = DIMENSION_LABELS.get(point.dimension, "契合点")
         fit_sentences.append(
@@ -126,7 +133,7 @@ def _template_draft(
 
     return EmailDraft(
         recipient=contact,
-        subject=f"推免自荐｜{contact.display_name}老师",
+        subject=f"推免自荐｜{_teacher_name(contact.display_name)}",
         paragraphs=[greeting, fit, gap, closing],
     )
 

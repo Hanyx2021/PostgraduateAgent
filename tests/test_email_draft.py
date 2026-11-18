@@ -80,6 +80,31 @@ def test_greeting_contains_advisor_name_and_signature() -> None:
     assert "张三" in text
 
 
+def test_teacher_suffix_is_not_duplicated() -> None:
+    draft = build_draft(make_match(), make_contact("李老师"), make_ledger())
+    text = "".join(s.text for p in draft.paragraphs for s in p.sentences)
+    assert "老师老师" not in text
+    assert "尊敬的李老师" in text
+    assert "老师" in draft.subject and "老师老师" not in draft.subject
+
+
+def test_name_without_suffix_gets_teacher_title() -> None:
+    draft = build_draft(make_match(), make_contact("李涓子"), make_ledger())
+    text = "".join(s.text for p in draft.paragraphs for s in p.sentences)
+    assert "尊敬的李涓子老师" in text
+
+
+def test_student_point_sentence_ends_with_period() -> None:
+    draft = build_draft(
+        make_match(),
+        make_contact(),
+        make_ledger(),
+        student_voice_samples=["我做过多模态检索增强生成的课程项目"],
+    )
+    fit = next(p for p in draft.paragraphs if p.role == "fit")
+    assert all(sentence.text.endswith(("。", "！", "？")) for sentence in fit.sentences)
+
+
 def test_missing_signature_uses_placeholder() -> None:
     draft = build_draft(make_match(), make_contact(), make_ledger())
     text = "".join(s.text for p in draft.paragraphs for s in p.sentences)
