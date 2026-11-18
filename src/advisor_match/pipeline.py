@@ -11,7 +11,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from advisor_match.email.draft import build_draft
+from advisor_match.email.validator import validate_draft
+from advisor_match.guards.recipient import RecipientIssue, check_recipient
 from advisor_match.guards.sensitive import assert_no_sensitive_fields
+from advisor_match.llm.client import LLMClient
 from advisor_match.retrieval.index import AdvisorIndex
 from advisor_match.schemas import (
     AdvisorContact,
@@ -20,6 +24,7 @@ from advisor_match.schemas import (
     LedgerRecord,
     MatchResult,
     StudentProfile,
+    ValidationReport,
 )
 
 
@@ -29,6 +34,22 @@ class StageLog:
     input_count: int
     output_count: int
     note: str = ""
+
+
+@dataclass
+class EmailResult:
+    """草稿 + 校验报告。没有"已发送"字段，也不应该有。"""
+
+    draft: EmailDraft
+    report: ValidationReport
+
+
+class RecipientMismatch(ValueError):
+    """收件人核对未通过。必须硬阻塞，不能降级为警告。"""
+
+    def __init__(self, issues: list[RecipientIssue]) -> None:
+        self.issues = issues
+        super().__init__("；".join(issue.message for issue in issues))
 
 
 def run_matching(
@@ -48,9 +69,27 @@ def run_email(
     ledger: dict[str, LedgerRecord],
     *,
     student_points: list[str] | None = None,
-) -> EmailDraft:
-    """执行第 5 步的前半段：生成 + 校验草稿。不确认、不发送。"""
-    raise NotImplementedError("串起 build_draft → validate_draft → check_recipient")
+    student_signature: str | None = None,
+    llm: LLMClient | None = None,
+) -> EmailResult:
+    """执行第 5 步的前半段：生成 + 校验草稿。不确认、不发送。
+
+    顺序固定：先生成，再删无据句，最后核对收件人。收件人不一致时抛异常，
+    因为"点一下复制"之后就没有第二次拦截机会了。
+    """
+    draft = build_draft(
+        match,
+        contact,
+        ledger,
+        student_voice_samples=student_points,
+        student_signature=student_signature,
+        llm=llm,
+    )
+    draft, report = validate_draft(draft, ledger)
+    issues = check_recipient(draft, contact)
+    if issues:
+        raise RecipientMismatch(issues)
+    return EmailResult(draft=draft, report=report)
 
 
-__all__ = ["run_matching", "run_email", "StageLog"]
+__all__ = ["run_matching", "run_email", "EmailResult", "RecipientMismatch", "StageLog"]

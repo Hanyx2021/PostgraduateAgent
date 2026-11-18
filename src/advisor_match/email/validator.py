@@ -42,6 +42,11 @@ def validate_draft(
     for paragraph in draft.paragraphs:
         kept: list[EmailSentence] = []
         for sentence in paragraph.sentences:
+            if sentence.kind in {"intent", "greeting"}:
+                # 意向句与礼节句不含事实主张，允许没有台账依据。
+                kept.append(sentence)
+                report.kept.append(sentence.text)
+                continue
             if sentence.ledger_refs:
                 missing = [ref for ref in sentence.ledger_refs if ref not in ledger]
                 if missing:
@@ -50,6 +55,7 @@ def validate_draft(
                 kept.append(sentence)
                 report.kept.append(sentence.text)
             elif _is_boilerplate(sentence.text):
+                # 兼容旧数据：未标 kind 的寒暄句按白名单放行。
                 kept.append(sentence)
                 report.kept.append(sentence.text)
             else:

@@ -12,7 +12,7 @@
 | F3 | 保留探索位 | 每档至少 1 位非主榜候选，且界面标注"探索位" | `ranking/tiers.py:assemble` | 待实现 |
 | H1 | 事实台账 | 每条台账记录至少一条 `SourceRef`；引文必须能在原文中找到 | `schemas.LedgerRecord`、`ledger/build.quote_is_grounded` | 结构层通过 |
 | H2 | 无据陈述占比为 0 | 交付草稿中无法解析到台账的句子数为 0 | `email/validator.validate_draft` | ✅ 有测试 |
-| H3 | 学生先自写主张 | 草稿生成接口要求传入 `student_points`，而非只给简历 | `email/draft.build_draft` | 接口已定，待实现 |
+| H3 | 学生先自写主张 | 草稿生成接口要求传入 `student_points`，对不台账的句子直接丢弃 | `email/draft.build_draft` | ✅ 有测试 |
 | S1 | 20 条注入样本越权为 0 | 全部识别 + 无发信 / 无敏感读取能力 | `tests/test_injection.py` | ✅ 20/20 |
 | S2 | 收件人校验拦截 100% | 导师姓名、邮箱、正文称呼三重比对，任一不符即阻塞 | `guards/recipient.check_recipient` | ✅ |
 | S3 | 不自动发送 | 包内不存在 send/smtp；草稿无 sent 状态 | `tests/test_injection.py::test_no_send_capability_in_codebase` | ✅ |

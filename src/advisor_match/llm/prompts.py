@@ -62,7 +62,8 @@ EMAIL_SYSTEM = """\
 1. 不得新增学生没有提供的任何事实。没有依据的句子直接不写。
 2. 论文状态、成绩、经历按台账原文表述，不得升级措辞。
 3. 语气克制，不用"极大热情""非常渴望"之类的空洞表达。
-4. 每句话输出时附带它所依赖的台账 ID（没有依赖则给空数组）。
+4. 每句话输出时附带 kind 与它所依赖的台账 ID：
+   kind=fact 时必须给台账 ID；kind=intent（计划、意愿）或 greeting（问候、署名）时给空数组。
 5. 不写导师可能不招生之类的推测；招生状态未知就不提。
 """
 
@@ -76,5 +77,5 @@ EMAIL_USER = """\
 导师与匹配理由：
 {match_json}
 
-输出 JSON：{{"subject": "...", "paragraphs": [{{"role": "greeting|fit|gap|closing", "sentences": [{{"text": "...", "ledger_refs": ["L-0001"]}}]}}]}}
+输出 JSON：{{"subject": "...", "paragraphs": [{{"role": "greeting|fit|gap|closing", "sentences": [{{"text": "...", "kind": "fact|intent|greeting", "ledger_refs": ["L-0001"]}}]}}]}}
 """

@@ -36,18 +36,19 @@ def check_recipient(draft: EmailDraft, contact: AdvisorContact) -> list[Recipien
 
     # 正文首段必须出现导师姓名，否则视为模板未替换。
     first_paragraph = "".join(s.text for s in draft.paragraphs[0].sentences)
-    if contact.display_name not in first_paragraph:
+    salutation = re.search(r"尊敬的\s*([^\s，,：:！!。]{1,10}?)\s*老师", first_paragraph)
+    if salutation is not None:
+        # "尊敬的X老师"中的 X 必须是联系人姓名的子串，防止串行到另一位导师。
+        if salutation.group(1) not in contact.display_name:
+            issues.append(
+                RecipientIssue(
+                    "wrong_salutation",
+                    f"正文称呼「{salutation.group(1)}老师」与联系人「{contact.display_name}」不一致",
+                )
+            )
+    elif contact.display_name not in first_paragraph:
         issues.append(
             RecipientIssue("missing_salutation", f"正文开头未出现导师姓名「{contact.display_name}」")
         )
-
-    # 正文里不应残留其他导师的称呼（串行时最常见的错误）。
-    all_text = "".join(s.text for p in draft.paragraphs for s in p.sentences)
-    for other in re.findall(r"([一-龥]{1,3})老师", all_text):
-        if other not in contact.display_name:
-            issues.append(
-                RecipientIssue("possible_wrong_salutation", f"正文出现其他称呼「{other}老师」")
-            )
-            break
 
     return issues

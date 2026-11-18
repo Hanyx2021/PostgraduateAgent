@@ -223,8 +223,9 @@ class MatchResult(BaseModel):
 # --------------------------------------------------------------------------
 class EmailSentence(BaseModel):
     text: str = Field(min_length=1)
-    #: 该句依赖的台账记录 ID。空列表表示这句话不含事实主张
-    #: （如"您好""期待您的回复"），校验器会放行但会统计。
+    #: 句子类型。事实句必须绑定台账；意向句（"我希望……"）与礼节句没有事实主张。
+    kind: Literal["fact", "intent", "greeting"] = "fact"
+    #: 该句依赖的台账记录 ID。事实句必须非空且能查到，否则整段丢弃。
     ledger_refs: list[str] = Field(default_factory=list)
 
 
