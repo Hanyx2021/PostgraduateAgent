@@ -28,6 +28,9 @@ streamlit run app/streamlit_app.py
 # 命令行跑一次匹配（需要本地 data/processed/advisors.jsonl）
 python -m advisor_match.pipeline --target "信息检索,多模态学习" \
   --statement "完成多模态检索增强生成的课程项目" --top 8
+
+# 跑评估：30 个合成画像，输出 Recall@10 / nDCG@10
+python -m advisor_match.evaluation --advisors data/processed/advisors.jsonl
 ```
 
 ## 五步流水线
