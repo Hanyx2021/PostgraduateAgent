@@ -77,14 +77,15 @@ class AdvisorIndex:
 
 
 def advisor_to_text(advisor: Advisor) -> str:
-    """导师的可检索文本。刻意不拼接 name / affiliation / title。"""
+    """导师的可检索文本。刻意不拼接 name / affiliation / title。
+
+    论文只收标题，不收摘要：对照实验里标题能把 nDCG 从 0.437 提到 0.445，
+    摘要则把中文方向匹配稀释得更厉害（Recall 0.468 → 0.453）。
+    """
     parts: list[str] = list(advisor.research_tags)
     if advisor.research_summary:
         parts.append(advisor.research_summary)
-    for paper in advisor.recent_papers:
-        parts.append(paper.title)
-        if paper.abstract:
-            parts.append(paper.abstract)
+    parts.extend(paper.title for paper in advisor.recent_papers)
     return "\n".join(part for part in parts if part)
 
 

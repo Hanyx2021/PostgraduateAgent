@@ -29,6 +29,9 @@ streamlit run app/streamlit_app.py
 pip install -e ".[embeddings]"
 python -c "from modelscope import snapshot_download; snapshot_download('BAAI/bge-small-zh-v1.5', local_dir='data/models/bge-small-zh-v1.5')"
 
+# 可选：用 OpenAlex 补导师论文（需在本地 .env 配置 AM_OPENALEX_KEY）
+python -m advisor_match.ingest.openalex --advisors data/processed/advisors.jsonl
+
 # 命令行跑一次匹配（需要本地 data/processed/advisors.jsonl）
 python -m advisor_match.pipeline --target "信息检索,多模态学习" \
   --statement "完成多模态检索增强生成的课程项目" --top 8

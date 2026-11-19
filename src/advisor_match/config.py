@@ -13,6 +13,21 @@ from pydantic import BaseModel
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+
+def _load_env_file(path: Path) -> None:
+    """极简 .env 加载：只支持 KEY=VALUE，不覆盖已有环境变量。"""
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip())
+
+
+_load_env_file(REPO_ROOT / ".env")
+
 DATA_DIR = REPO_ROOT / "data"
 RAW_DIR = DATA_DIR / "raw"
 PROCESSED_DIR = DATA_DIR / "processed"
@@ -43,6 +58,8 @@ class Settings(BaseModel):
     embedding_model: str | None = os.getenv(
         "AM_EMBEDDING_MODEL", "data/models/bge-small-zh-v1.5"
     )
+    #: OpenAlex 免费 key，仅从本地 .env 读取，绝不入库。
+    openalex_key: str | None = os.getenv("AM_OPENALEX_KEY")
     llm_provider: str = os.getenv("AM_LLM_PROVIDER", "stub")
     llm_base_url: str | None = os.getenv("AM_LLM_BASE_URL")
     llm_model: str | None = os.getenv("AM_LLM_MODEL")
