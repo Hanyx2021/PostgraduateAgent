@@ -53,10 +53,48 @@ def test_guard_catches_sensitive_field_in_nested_model() -> None:
         assert_no_sensitive_fields(Outer(profile=Inner(hometown="某省")))
 
 
-@pytest.mark.skip(reason="等待 ranking 实现：构造仅姓名/性别/生源地不同的三份画像，断言 MatchResult 完全相同")
 def test_counterfactual_recommendation_is_identical() -> None:
-    """TODO: 用同一份台账 + 三份仅身份不同的画像跑 run_matching，比较 model_dump()。
+    """同一份台账 + 仅身份文本不同的画像，推荐结果必须完全一致。
 
-    注意：由于 StudentProfile 不允许身份字段，这里的变化应当通过“在自由文本里
-    写入姓名/籍贯”来模拟，以验证脱敏器真的把这些内容处理掉。
+    身份信息不允许出现在字段里，这里通过自由文本（constraints）注入姓名、
+    性别、生源地，验证它们不会进入查询词或重排判断。
     """
+    from advisor_match.pipeline import run_matching
+    from advisor_match.retrieval.index import AdvisorIndex
+    from advisor_match.schemas import Advisor, LedgerRecord, SourceRef, StudentProfile
+
+    advisors = [
+        Advisor(
+            name="甲",
+            research_tags=["信息检索", "多模态学习"],
+            sources=[SourceRef(doc_id="p-甲", locator="研究领域", quote="信息检索，多模态学习")],
+        ),
+        Advisor(
+            name="乙",
+            research_tags=["数据库"],
+            sources=[SourceRef(doc_id="p-乙", locator="研究领域", quote="数据库")],
+        ),
+    ]
+    index = AdvisorIndex.build(advisors)
+    ledger = [
+        LedgerRecord(
+            id="L-0001",
+            kind="course_project",
+            statement="完成信息检索与多模态学习的课程项目",
+            evidence=[SourceRef(doc_id="resume", locator="p.1", quote="信息检索与多模态学习")],
+        )
+    ]
+
+    def profile(constraint: str) -> StudentProfile:
+        return StudentProfile(
+            ledger=ledger,
+            target_directions=["信息检索"],
+            constraints=[constraint],
+        )
+
+    first, _ = run_matching(profile("我叫张三，女，来自某省"), index, keep_k=2)
+    second, _ = run_matching(profile("我叫李四，男，来自另一省"), index, keep_k=2)
+    third, _ = run_matching(profile(""), index, keep_k=2)
+
+    assert first.model_dump() == second.model_dump() == third.model_dump()
+    assert first.core or first.adjacent

@@ -4,7 +4,7 @@
 用公开、可核验的信息完成导师匹配，用学生本人的材料生成自荐邮件，判断依据由学生本人逐句核对。
 
 - 组员：韩宇轩（数据与检索）、陈英豪（Agent 与产品）、杨骐岗（伦理与用户研究）
-- 当前阶段：**骨架 v0.1**（数据结构、校验器、防护层已可运行；检索与生成待实现）
+- 当前阶段：**v0.2**（导师库、召回、重排、分档已可运行；论文补全待定来源）
 
 ## 项目不是做什么
 
@@ -22,8 +22,12 @@ python -m venv .venv
 .venv/Scripts/activate        # Windows；macOS/Linux 用 source .venv/bin/activate
 pip install -e ".[dev]"
 
-pytest                        # 运行骨架测试
+pytest                        # 运行测试
 streamlit run app/streamlit_app.py
+
+# 命令行跑一次匹配（需要本地 data/processed/advisors.jsonl）
+python -m advisor_match.pipeline --target "信息检索,多模态学习" \
+  --statement "完成多模态检索增强生成的课程项目" --top 8
 ```
 
 ## 五步流水线

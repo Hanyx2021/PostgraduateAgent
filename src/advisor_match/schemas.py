@@ -214,6 +214,8 @@ class MatchResult(BaseModel):
     core: list[AdvisorMatch] = Field(default_factory=list)
     adjacent: list[AdvisorMatch] = Field(default_factory=list)
     needs_support: list[AdvisorMatch] = Field(default_factory=list)
+    #: 系统主动加入的探索位（不按证据数排），界面需要明确标注。
+    exploration: list[str] = Field(default_factory=list)
     #: 召回但未进入三档的候选及剔除原因，便于学生追问"为什么没有他"。
     excluded: dict[str, str] = Field(default_factory=dict)
 
