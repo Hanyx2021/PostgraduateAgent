@@ -32,7 +32,8 @@ DOMINANCE_RATIO = 3
 
 
 def normalize_name(name: str) -> str:
-    return re.sub(r"[.\s\-]", "", name).lower()
+    """去掉空格、点、各类连字符（含 Unicode U+2010）与下划线。"""
+    return re.sub(r"[\W_]+", "", name).lower()
 
 
 @dataclass(frozen=True)
@@ -152,8 +153,11 @@ def work_to_paper(work: dict) -> Paper | None:
 
 
 def resolve_author(advisor: Advisor, client: OpenAlexClient) -> Resolution:
-    variants = {normalize_name(item) for item in name_variants(advisor.name)}
-    candidates = client.search_authors(name_variants(advisor.name)[0])
+    variant_list = name_variants(advisor.name)
+    variants = {normalize_name(item) for item in variant_list}
+    primary = normalize_name(variant_list[0])
+    reversed_only = variants - {primary}
+    candidates = client.search_authors(variant_list[0])
     exact = [
         candidate
         for candidate in candidates
@@ -162,6 +166,15 @@ def resolve_author(advisor: Advisor, client: OpenAlexClient) -> Resolution:
 
     if not exact:
         return Resolution(status="none", candidates=candidates)
+
+    # 只靠"名 姓"倒序写法命中的，不能自动认定：CHEN TING 会匹配到同名的另一位
+    # Ting Chen。这类一律交人工。
+    primary_hits = [c for c in exact if normalize_name(c.display_name) == primary]
+    if not primary_hits and any(
+        normalize_name(c.display_name) in reversed_only for c in exact
+    ):
+        return Resolution(status="ambiguous", candidates=exact)
+
     if len(exact) == 1:
         return Resolution(status="unique", author=exact[0], candidates=exact)
 
@@ -176,6 +189,7 @@ class OpenAlexReport:
     attached: int = 0
     unique: int = 0
     picked: int = 0
+    manual: int = 0
     ambiguous: list[str] = field(default_factory=list)
     none: list[str] = field(default_factory=list)
     failed: list[tuple[str, str]] = field(default_factory=list)
@@ -188,26 +202,36 @@ def attach_papers(
     *,
     year_from: int = 2021,
     max_per_advisor: int = 10,
+    author_map: dict[str, str] | None = None,
 ) -> OpenAlexReport:
+    """``author_map`` 是人工核对后的 导师姓名 → OpenAlex 作者 ID。"""
+    author_map = author_map or {}
     report = OpenAlexReport()
     for advisor in advisors:
-        try:
-            resolution = resolve_author(advisor, client)
-        except RuntimeError as error:
-            report.failed.append((advisor.name, str(error)))
-            continue
+        if advisor.name in author_map:
+            author_id = author_map[advisor.name]
+            status = "manual"
+        else:
+            try:
+                resolution = resolve_author(advisor, client)
+            except RuntimeError as error:
+                report.failed.append((advisor.name, str(error)))
+                continue
 
-        if resolution.status == "ambiguous":
-            report.ambiguous.append(advisor.name)
-            continue
-        if resolution.status == "none" or resolution.author is None:
-            report.none.append(advisor.name)
-            continue
+            if resolution.status == "ambiguous":
+                # 本次判定不可信：清掉可能存在的旧结果，避免错误论文留在表里。
+                advisor.recent_papers = []
+                report.ambiguous.append(advisor.name)
+                continue
+            if resolution.status == "none" or resolution.author is None:
+                advisor.recent_papers = []
+                report.none.append(advisor.name)
+                continue
+            author_id = resolution.author.author_id
+            status = resolution.status
 
         try:
-            papers = client.works_by_author(
-                resolution.author.author_id, year_from=year_from, limit=max_per_advisor
-            )
+            papers = client.works_by_author(author_id, year_from=year_from, limit=max_per_advisor)
         except RuntimeError as error:
             report.failed.append((advisor.name, str(error)))
             continue
@@ -215,10 +239,12 @@ def attach_papers(
         advisor.recent_papers = papers
         report.attached += 1
         report.per_advisor[advisor.name] = len(papers)
-        if resolution.status == "unique":
+        if status == "unique":
             report.unique += 1
-        else:
+        elif status == "picked":
             report.picked += 1
+        else:
+            report.manual += 1
     return report
 
 
@@ -231,17 +257,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--report", type=Path, default=Path("data/processed/openalex_report.json"))
     parser.add_argument("--year-from", type=int, default=2021)
     parser.add_argument("--max-per", type=int, default=10)
+    parser.add_argument(
+        "--author-map",
+        type=Path,
+        default=None,
+        help="人工核对后的 JSON：导师姓名 → OpenAlex 作者 ID",
+    )
     args = parser.parse_args(argv)
 
     if not settings.openalex_key:
         parser.error("缺少 AM_OPENALEX_KEY，请在本地 .env 中配置")
 
+    author_map = (
+        json.loads(args.author_map.read_text(encoding="utf-8")) if args.author_map else None
+    )
     advisors = load_advisors(args.advisors)
     report = attach_papers(
         advisors,
         OpenAlexClient(settings.openalex_key),
         year_from=args.year_from,
         max_per_advisor=args.max_per,
+        author_map=author_map,
     )
     save_advisors(advisors, args.out)
 

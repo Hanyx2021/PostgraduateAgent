@@ -40,15 +40,34 @@ ACCEPTED_CATEGORY_PREFIXES = ("cs.", "stat.ML")
 _last_request_at = 0.0
 
 
+#: 多音字姓氏的正确读法；pypinyin 默认读音在姓氏里常常是错的。
+SURNAME_PINYIN = {
+    "翟": "zhai",
+    "曾": "zeng",
+    "解": "xie",
+    "单": "shan",
+    "仇": "qiu",
+    "查": "zha",
+    "区": "ou",
+    "朴": "piao",
+    "乐": "yue",
+}
+
+
 def name_variants(name: str) -> list[str]:
     """返回 [西式姓名, 中式姓名]；外籍名只返回原样。"""
     if re.fullmatch(r"[A-Za-z .'\-]+", name):
+        # 目录里的外籍/拼音名多为"姓 名"大写，如 CHEN TING，补一个倒序写法。
+        if name.isupper():
+            tokens = re.split(r"[\s\-]+", name.strip())
+            if len(tokens) == 2:
+                return [name, f"{tokens[1].title()} {tokens[0].title()}"]
         return [name]
     syllables = lazy_pinyin(name)
     if len(syllables) < 2:
         return [" ".join(syllables)]
     # 中文名的双字名是一个整体：胡事民 → Shimin Hu，而不是 Shi Min Hu。
-    surname = syllables[0]
+    surname = SURNAME_PINYIN.get(name[0], syllables[0])
     given = "".join(syllables[1:])
     western = f"{given.title()} {surname.title()}"
     eastern = f"{surname.title()} {given.title()}"

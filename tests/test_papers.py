@@ -42,6 +42,10 @@ def test_name_variants_for_chinese_and_latin() -> None:
     assert name_variants("胡事民") == ["Shimin Hu", "Hu Shimin"]
     assert name_variants("刘知远") == ["Zhiyuan Liu", "Liu Zhiyuan"]
     assert name_variants("CANNISTRACI CARLO VITTORIO") == ["CANNISTRACI CARLO VITTORIO"]
+    # 多音字姓氏：翟作姓氏读 Zhái
+    assert name_variants("翟季冬") == ["Jidong Zhai", "Zhai Jidong"]
+    # 目录中的大写外籍名补倒序写法
+    assert name_variants("CHEN TING") == ["CHEN TING", "Ting Chen"]
 
 
 def test_normalize_author() -> None:

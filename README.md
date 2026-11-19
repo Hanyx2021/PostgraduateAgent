@@ -31,6 +31,8 @@ python -c "from modelscope import snapshot_download; snapshot_download('BAAI/bge
 
 # 可选：用 OpenAlex 补导师论文（需在本地 .env 配置 AM_OPENALEX_KEY）
 python -m advisor_match.ingest.openalex --advisors data/processed/advisors.jsonl
+# 自动消歧失败时，生成人工核对清单
+python -m advisor_match.ingest.review
 
 # 命令行跑一次匹配（需要本地 data/processed/advisors.jsonl）
 python -m advisor_match.pipeline --target "信息检索,多模态学习" \
