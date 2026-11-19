@@ -23,6 +23,11 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.5",
 ]
+embeddings = [
+    "sentence-transformers>=3.0",
+    "torch>=2.2",
+    "modelscope>=1.20",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

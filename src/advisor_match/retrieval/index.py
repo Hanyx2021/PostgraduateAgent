@@ -14,8 +14,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import jieba
+import numpy as np
 from rank_bm25 import BM25Okapi
 
+from advisor_match.retrieval.vector import EmbeddingProvider, build_matrix
 from advisor_match.schemas import Advisor
 
 
@@ -31,9 +33,13 @@ class AdvisorIndex:
     tokens: list[list[str]]
     skipped: list[str]
     bm25: BM25Okapi | None = None
+    vectors: np.ndarray | None = None
+    embedding: EmbeddingProvider | None = None
 
     @classmethod
-    def build(cls, advisors: list[Advisor]) -> "AdvisorIndex":
+    def build(
+        cls, advisors: list[Advisor], embedding: EmbeddingProvider | None = None
+    ) -> "AdvisorIndex":
         kept: list[Advisor] = []
         docs: list[str] = []
         skipped: list[str] = []
@@ -47,12 +53,27 @@ class AdvisorIndex:
         tokens = [tokenize(doc) for doc in docs]
         tokens = [token if token else [""] for token in tokens]
         bm25 = BM25Okapi(tokens) if tokens else None
-        return cls(advisors=kept, docs=docs, tokens=tokens, skipped=skipped, bm25=bm25)
+        vectors = build_matrix(docs, embedding) if embedding is not None and docs else None
+        return cls(
+            advisors=kept,
+            docs=docs,
+            tokens=tokens,
+            skipped=skipped,
+            bm25=bm25,
+            vectors=vectors,
+            embedding=embedding,
+        )
 
     def scores(self, query: str) -> list[float]:
         if self.bm25 is None:
             return []
         return list(self.bm25.get_scores(tokenize(query)))
+
+    def vector_scores(self, query: str) -> np.ndarray | None:
+        if self.vectors is None or self.embedding is None:
+            return None
+        query_vector = self.embedding.encode([query])[0]
+        return self.vectors @ query_vector
 
 
 def advisor_to_text(advisor: Advisor) -> str:
@@ -74,11 +95,15 @@ def save_index(index: AdvisorIndex, path: Path) -> None:
         "docs": index.docs,
         "tokens": index.tokens,
         "skipped": index.skipped,
+        "vectors": index.vectors,
     }
     path.write_bytes(pickle.dumps(payload))
 
 
-def load_index(path: Path) -> AdvisorIndex:
+def load_index(
+    path: Path, embedding: EmbeddingProvider | None = None
+) -> AdvisorIndex:
+    """加载索引。要使用向量召回时需传入与建索引时相同的 embedding。"""
     payload = pickle.loads(path.read_bytes())
     advisors = [Advisor.model_validate(item) for item in payload["advisors"]]
     bm25 = BM25Okapi(payload["tokens"]) if payload["tokens"] else None
@@ -88,6 +113,8 @@ def load_index(path: Path) -> AdvisorIndex:
         tokens=payload["tokens"],
         skipped=payload["skipped"],
         bm25=bm25,
+        vectors=payload.get("vectors"),
+        embedding=embedding,
     )
 
 

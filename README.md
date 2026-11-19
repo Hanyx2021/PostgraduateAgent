@@ -25,6 +25,10 @@ pip install -e ".[dev]"
 pytest                        # 运行测试
 streamlit run app/streamlit_app.py
 
+# 可选：启用向量召回（本地模型，约 95MB，不入库）
+pip install -e ".[embeddings]"
+python -c "from modelscope import snapshot_download; snapshot_download('BAAI/bge-small-zh-v1.5', local_dir='data/models/bge-small-zh-v1.5')"
+
 # 命令行跑一次匹配（需要本地 data/processed/advisors.jsonl）
 python -m advisor_match.pipeline --target "信息检索,多模态学习" \
   --statement "完成多模态检索增强生成的课程项目" --top 8

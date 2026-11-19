@@ -23,6 +23,7 @@ from advisor_match.ranking.rerank import rerank_one
 from advisor_match.ranking.tiers import assemble, selected_count, tier_label
 from advisor_match.retrieval.index import AdvisorIndex
 from advisor_match.retrieval.recall import recall
+from advisor_match.retrieval.vector import load_embedding
 from advisor_match.schemas import (
     AdvisorContact,
     AdvisorMatch,
@@ -78,7 +79,12 @@ def run_matching(
     matches: list[AdvisorMatch] = []
     for advisor in candidates:
         sources = advisor_source_text.get(advisor.name) if advisor_source_text else None
-        match = rerank_one(profile, advisor, advisor_source_text=sources)
+        match = rerank_one(
+            profile,
+            advisor,
+            advisor_source_text=sources,
+            embedding=index.embedding,
+        )
         if match is not None:
             matches.append(match)
     logs.append(StageLog("rerank", len(candidates), len(matches)))
@@ -178,7 +184,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("至少提供一条 --statement，否则画像没有可核验材料")
 
     advisors = load_advisors(args.advisors)
-    index = AdvisorIndex.build(advisors)
+    embedding = load_embedding()
+    index = AdvisorIndex.build(advisors, embedding=embedding)
     profile = StudentProfile(
         ledger=list(_demo_ledger(args.statement).values()),
         target_directions=[item.strip() for item in args.target.split(",") if item.strip()],
@@ -186,7 +193,10 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     result, logs = run_matching(profile, index, keep_k=args.top)
-    print(f"索引导师 {len(index.advisors)} 位，跳过无研究方向 {len(index.skipped)} 位")
+    print(
+        f"索引导师 {len(index.advisors)} 位，跳过无研究方向 {len(index.skipped)} 位，"
+        f"向量召回 {'开' if embedding else '关'}"
+    )
     _print_result(result, logs)
     return 0
 

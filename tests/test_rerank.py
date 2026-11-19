@@ -76,6 +76,31 @@ def test_unmatched_direction_becomes_gap() -> None:
     assert any("多模态学习" in gap.statement for gap in match.gaps)
 
 
+class FakeEmbedding:
+    """把"信息检索"和"机器学习"映射到同一维，模拟语义相近。"""
+
+    def encode(self, texts):
+        import numpy as np
+
+        rows = []
+        for text in texts:
+            vector = np.zeros(3, dtype=np.float32)
+            if "检索" in text or "机器学习" in text:
+                vector[0] = 1.0
+            if "数据库" in text:
+                vector[1] = 1.0
+            rows.append(vector)
+        return np.vstack(rows)
+
+
+def test_semantic_overlap_can_create_evidence_point() -> None:
+    profile = make_profile(["信息检索"], "做过信息检索课程项目")
+    match = rerank_one(profile, make_advisor(["机器学习"]), embedding=FakeEmbedding())
+    assert match is not None
+    assert "语义上相近" in match.match_points[0].statement
+    assert match.tier == "core"
+
+
 def test_verify_grounding_drops_fabricated_quote() -> None:
     match = AdvisorMatch(
         advisor=Advisor(name="李老师"),

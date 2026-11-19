@@ -26,6 +26,7 @@ from pathlib import Path
 from advisor_match.ingest.advisors import load_advisors
 from advisor_match.retrieval.index import AdvisorIndex
 from advisor_match.retrieval.recall import recall
+from advisor_match.retrieval.vector import load_embedding
 from advisor_match.schemas import Advisor, LedgerRecord, SourceRef, StudentProfile
 
 
@@ -130,30 +131,45 @@ class EvalReport:
 def evaluate(
     profiles: list[EvalProfile], index: AdvisorIndex, *, k: int = 10
 ) -> EvalReport:
-    pipeline_rows: list[tuple[float, float]] = []
+    modes = [("bm25", 1.0, 0.0), ("pipeline", 0.5, 0.5)]
+    if index.vectors is not None:
+        modes.append(("vector", 0.0, 1.0))
+
+    mode_rows: dict[str, list[tuple[float, float]]] = {name: [] for name, _, _ in modes}
     catalog_rows: list[tuple[float, float]] = []
     random_rows: list[tuple[float, float]] = []
     per_profile: list[dict] = []
     catalog_ranking = _catalog_ranking(index)
+    indexed_names = {advisor.name for advisor in index.advisors}
 
     for profile in profiles:
-        ranked = [advisor.name for advisor in recall(profile.profile, index, k=len(index.advisors))]
-        random_ranked = _random_ranking(index, seed=profile.id)
-        indexed_names = {advisor.name for advisor in index.advisors}
-        metrics = {
+        metrics: dict = {
             "id": profile.id,
             "label": profile.label,
             "ground_truth": len(profile.ground_truth),
             "indexed_ground_truth": len(set(profile.ground_truth) & indexed_names),
-            "pipeline_recall": recall_at_k(ranked, profile.ground_truth, k),
-            "pipeline_ndcg": ndcg_at_k(ranked, profile.ground_truth, k),
-            "catalog_recall": recall_at_k(catalog_ranking, profile.ground_truth, k),
-            "catalog_ndcg": ndcg_at_k(catalog_ranking, profile.ground_truth, k),
-            "random_recall": recall_at_k(random_ranked, profile.ground_truth, k),
-            "random_ndcg": ndcg_at_k(random_ranked, profile.ground_truth, k),
         }
+        for name, bm25_weight, vector_weight in modes:
+            ranked = [
+                advisor.name
+                for advisor in recall(
+                    profile.profile,
+                    index,
+                    k=len(index.advisors),
+                    bm25_weight=bm25_weight,
+                    vector_weight=vector_weight,
+                )
+            ]
+            metrics[f"{name}_recall"] = recall_at_k(ranked, profile.ground_truth, k)
+            metrics[f"{name}_ndcg"] = ndcg_at_k(ranked, profile.ground_truth, k)
+            mode_rows[name].append((metrics[f"{name}_recall"], metrics[f"{name}_ndcg"]))
+
+        random_ranked = _random_ranking(index, seed=profile.id)
+        metrics["catalog_recall"] = recall_at_k(catalog_ranking, profile.ground_truth, k)
+        metrics["catalog_ndcg"] = ndcg_at_k(catalog_ranking, profile.ground_truth, k)
+        metrics["random_recall"] = recall_at_k(random_ranked, profile.ground_truth, k)
+        metrics["random_ndcg"] = ndcg_at_k(random_ranked, profile.ground_truth, k)
         per_profile.append(metrics)
-        pipeline_rows.append((metrics["pipeline_recall"], metrics["pipeline_ndcg"]))
         catalog_rows.append((metrics["catalog_recall"], metrics["catalog_ndcg"]))
         random_rows.append((metrics["random_recall"], metrics["random_ndcg"]))
 
@@ -166,11 +182,11 @@ def evaluate(
         )
 
     report = EvalReport(k=k, profile_count=len(profiles), per_profile=per_profile)
-    for name, rows in (
-        ("pipeline", pipeline_rows),
+    for name, rows in [
+        *((name, mode_rows[name]) for name, _, _ in modes),
         ("catalog", catalog_rows),
         ("random", random_rows),
-    ):
+    ]:
         recall_score, ndcg_score = average(rows)
         report.systems.append(SystemScore(name=name, recall=recall_score, ndcg=ndcg_score))
     report.notes.append("真值来自 2027 招生目录方向，画像由模板生成，非人工双盲标注")
@@ -186,10 +202,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, default=Path("data/processed/eval_report.json"))
     parser.add_argument("--k", type=int, default=10)
     parser.add_argument("--n", type=int, default=30, help="画像数量")
+    parser.add_argument("--no-vector", action="store_true", help="只评估 BM25")
     args = parser.parse_args(argv)
 
     advisors = load_advisors(args.advisors)
-    index = AdvisorIndex.build(advisors)
+    embedding = None if args.no_vector else load_embedding()
+    index = AdvisorIndex.build(advisors, embedding=embedding)
+    print(f"vector: {'on' if embedding else 'off'}")
     profiles = build_catalog_profiles(advisors, n=args.n)
     report = evaluate(profiles, index, k=args.k)
 

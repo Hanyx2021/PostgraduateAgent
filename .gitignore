@@ -33,3 +33,6 @@ desktop.ini
 
 # 本地日志（只记行为，不记内容；仍然不入库）
 logs/
+
+# 本地向量模型
+data/models/
