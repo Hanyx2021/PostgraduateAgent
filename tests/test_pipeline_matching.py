@@ -1,0 +1,60 @@
+"""端到端匹配测试：召回 → 重排 → 分档。"""
+
+from __future__ import annotations
+
+from advisor_match.pipeline import run_matching
+from advisor_match.retrieval.index import AdvisorIndex
+from advisor_match.schemas import Advisor, LedgerRecord, SourceRef, StudentProfile
+
+
+def make_advisor(name: str, tags: list[str]) -> Advisor:
+    return Advisor(
+        name=name,
+        research_tags=tags,
+        sources=[SourceRef(doc_id=f"p-{name}", locator="研究领域", quote="，".join(tags))],
+    )
+
+
+def make_profile() -> StudentProfile:
+    return StudentProfile(
+        ledger=[
+            LedgerRecord(
+                id="L-0001",
+                kind="course_project",
+                statement="完成信息检索与多模态学习的课程项目",
+                evidence=[SourceRef(doc_id="resume", locator="p.1", quote="信息检索与多模态学习")],
+            )
+        ],
+        target_directions=["信息检索", "多模态学习"],
+    )
+
+
+def test_run_matching_returns_tiers_and_logs() -> None:
+    advisors = [
+        make_advisor("甲", ["信息检索", "多模态学习"]),
+        make_advisor("乙", ["数据库"]),
+        make_advisor("丙", ["信息检索"]),
+        Advisor(name="丁"),  # 无研究方向，不应进入索引
+    ]
+    index = AdvisorIndex.build(advisors)
+
+    result, logs = run_matching(make_profile(), index, keep_k=2)
+
+    assert [log.stage for log in logs] == ["recall", "rerank", "tiers"]
+    assert result.core and result.core[0].advisor.name == "甲"
+    assert all(match.advisor.name != "乙" for match in result.core + result.adjacent)
+
+
+def test_run_matching_respects_sensitive_field_guard() -> None:
+    index = AdvisorIndex.build([make_advisor("甲", ["信息检索"])])
+    profile = make_profile()
+    profile.ledger[0].notes = "某中学"  # notes 是允许的自由文本，不应误伤
+    result, _ = run_matching(profile, index, keep_k=1)
+    assert result is not None
+
+
+def test_processing_is_reproducible() -> None:
+    index = AdvisorIndex.build([make_advisor("甲", ["信息检索"]), make_advisor("乙", ["信息检索"])])
+    first, _ = run_matching(make_profile(), index, keep_k=2)
+    second, _ = run_matching(make_profile(), index, keep_k=2)
+    assert first.model_dump() == second.model_dump()

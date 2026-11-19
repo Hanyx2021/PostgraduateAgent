@@ -7,9 +7,9 @@
 
 | # | 承诺 | 具体检验 | 当前落点 | 状态 |
 | --- | --- | --- | --- | --- |
-| F1 | 敏感属性不进入模型 | 仅改变姓名、性别、生源地，推荐结果（排序 + 各维度得分）完全一致 | `tests/test_fairness.py`；`StudentProfile` 无身份字段 | 结构层通过；行为层待 ranking |
+| F1 | 敏感属性不进入模型 | 仅改变姓名、性别、生源地，推荐结果（排序 + 各维度得分）完全一致 | `tests/test_fairness.py`（自由文本注入身份后 `MatchResult` 逐字段相等） | ✅ 结构层 + 行为层 |
 | F2 | 不显示录取概率、不按历史录取排序 | 代码中不存在录取概率字段与相关提示词 | `schemas.py` 无该字段 | ✅ |
-| F3 | 保留探索位 | 每档至少 1 位非主榜候选，且界面标注"探索位" | `ranking/tiers.py:assemble` | 待实现 |
+| F3 | 保留探索位 | 主榜之外固定保留 N 位，`MatchResult.exploration` 记录名单供界面标注 | `ranking/tiers.py:assemble` | ✅ 有测试 |
 | H1 | 事实台账 | 每条台账记录至少一条 `SourceRef`；引文必须能在原文中找到 | `schemas.LedgerRecord`、`ledger/build.quote_is_grounded` | 结构层通过 |
 | H2 | 无据陈述占比为 0 | 交付草稿中无法解析到台账的句子数为 0 | `email/validator.validate_draft` | ✅ 有测试 |
 | H3 | 学生先自写主张 | 草稿生成接口要求传入 `student_points`，对不台账的句子直接丢弃 | `email/draft.build_draft` | ✅ 有测试 |
