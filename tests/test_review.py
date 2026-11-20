@@ -36,7 +36,18 @@ def test_collect_candidates_prefers_exact_tsinghua() -> None:
         }
     )
     candidates = collect_candidates("唐杰", client)  # type: ignore[arg-type]
-    assert [item.author_id for item in candidates] == ["A1", "A2"]
+    # 只保留精确同名且清华的候选
+    assert [item.author_id for item in candidates] == ["A1"]
+
+
+def test_excluded_names_are_skipped() -> None:
+    client = FakeClient({"Lin Gan": [candidate("A1", "Lin Gan", 163, tsinghua=True)]})
+    entries = build_review(
+        [("甘霖", "ambiguous"), ("汪东升", "ambiguous")],  # type: ignore[arg-type]
+        client,  # type: ignore[arg-type]
+        exclude={"汪东升"},
+    )
+    assert [entry.name for entry in entries] == ["甘霖"]
 
 
 def test_build_review_and_render() -> None:

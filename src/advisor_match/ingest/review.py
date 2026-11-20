@@ -47,21 +47,25 @@ def collect_candidates(name: str, client: OpenAlexClient) -> list[AuthorCandidat
                 seen.setdefault(candidate.author_id, candidate)
         except RuntimeError:
             continue
+    # 只保留"精确同名 + 清华"的候选；其余不作为可选项，避免误选同名他人。
     return sorted(
-        seen.values(),
-        key=lambda item: (
-            not (normalize_name(item.display_name) in variants_norm and item.is_tsinghua),
-            not item.is_tsinghua,
-            -item.works_count,
+        (
+            candidate
+            for candidate in seen.values()
+            if normalize_name(candidate.display_name) in variants_norm and candidate.is_tsinghua
         ),
+        key=lambda item: -item.works_count,
     )
 
 
 def build_review(
-    names: list[tuple[str, str]], client: OpenAlexClient
+    names: list[tuple[str, str]], client: OpenAlexClient, *, exclude: set[str] | None = None
 ) -> list[ReviewEntry]:
+    exclude = exclude or set()
     entries: list[ReviewEntry] = []
     for name, status in names:
+        if name in exclude:
+            continue
         entries.append(
             ReviewEntry(
                 name=name,
@@ -103,7 +107,7 @@ def render_markdown(entries: list[ReviewEntry], *, generated_at: date) -> str:
         lines.append(f"## {index}. {entry.name}（{entry.romanized}）— {entry.status}")
         lines.append("")
         if not entry.candidates:
-            lines.append("无候选。")
+            lines.append("无同时满足「精确同名 + 清华」的候选。")
             lines.append("")
             continue
         lines.append("| 作者 ID | 显示名 | 作品数 | 引用 | 机构 | 精确同名 | 清华 |")
@@ -134,6 +138,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--out-md", type=Path, default=Path("data/processed/openalex_review.md"))
     parser.add_argument("--out-json", type=Path, default=Path("data/processed/openalex_review.json"))
+    parser.add_argument(
+        "--exclude",
+        type=Path,
+        default=Path("data/processed/openalex_exclude.json"),
+        help="不参与核对的导师名单（如基本不招生的老师），JSON 字符串数组",
+    )
     args = parser.parse_args(argv)
 
     if not settings.openalex_key:
@@ -143,8 +153,13 @@ def main(argv: list[str] | None = None) -> int:
     targets = [(name, "ambiguous") for name in report["ambiguous"]]
     targets += [(name, "none") for name in report["none"]]
 
+    exclude = (
+        set(json.loads(args.exclude.read_text(encoding="utf-8")))
+        if args.exclude and args.exclude.exists()
+        else set()
+    )
     client = OpenAlexClient(settings.openalex_key)
-    entries = build_review(targets, client)
+    entries = build_review(targets, client, exclude=exclude)
 
     args.out_md.parent.mkdir(parents=True, exist_ok=True)
     args.out_md.write_text(render_markdown(entries, generated_at=date.today()), encoding="utf-8")
