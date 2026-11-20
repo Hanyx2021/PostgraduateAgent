@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from advisor_match.ranking.rerank import rerank_one, verify_grounding
 from advisor_match.schemas import (
+    AdmissionEntry,
     Advisor,
     AdvisorMatch,
     LedgerRecord,
@@ -99,6 +100,43 @@ def test_semantic_overlap_can_create_evidence_point() -> None:
     assert match is not None
     assert "语义上相近" in match.match_points[0].statement
     assert match.tier == "core"
+
+
+def make_advisor_with_admission(direction: str) -> Advisor:
+    return Advisor(
+        name="陈老师",
+        admissions=[
+            AdmissionEntry(
+                year=2027,
+                program_code="081200",
+                program_name="计算机科学与技术",
+                program_type="学术学位",
+                direction_code="01",
+                direction=direction,
+                source="https://yzbm.example.edu.cn/catalog",
+            )
+        ],
+    )
+
+
+def test_admission_direction_can_supply_evidence_without_profile() -> None:
+    profile = make_profile(["信息检索"], "完成信息检索方向的项目")
+    match = rerank_one(profile, make_advisor_with_admission("信息检索"))
+    assert match is not None
+    assert match.tier == "core"
+    point = match.match_points[0]
+    assert point.advisor_refs[0].doc_id == "https://yzbm.example.edu.cn/catalog"
+    assert "招生目录" in point.statement
+    assert point.advisor_refs[0].quote == "信息检索"
+
+
+def test_admission_does_not_duplicate_tag_evidence() -> None:
+    advisor = make_advisor(["信息检索"])
+    advisor.admissions = make_advisor_with_admission("信息检索").admissions
+    profile = make_profile(["信息检索"], "完成信息检索方向的项目")
+    match = rerank_one(profile, advisor)
+    assert match is not None
+    assert len(match.match_points) == 1
 
 
 def test_verify_grounding_drops_fabricated_quote() -> None:

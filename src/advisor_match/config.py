@@ -39,8 +39,10 @@ class RetrievalConfig(BaseModel):
 
     recall_k: int = 30
     keep_k: int = 8
-    bm25_weight: float = 0.5
-    vector_weight: float = 0.5
+    #: 权重来自 30 个合成画像的网格搜索：0.3/0.7 的 nDCG 优于 0.5/0.5。
+    #: 样本仍小，换数据后应重新跑评估确认。
+    bm25_weight: float = 0.3
+    vector_weight: float = 0.7
     #: 纯向量命中的相似度下限。BGE 对无关中文短句也常给 0.3 左右，不能设得太低。
     vector_min_similarity: float = 0.45
     #: 重排时"语义相近"的判断阈值，比召回更严：要能写进理由里。

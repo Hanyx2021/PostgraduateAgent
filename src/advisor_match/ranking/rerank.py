@@ -88,8 +88,19 @@ def rerank_one(
     advisor_source_text: dict[str, str] | None = None,
     embedding: EmbeddingProvider | None = None,
 ) -> AdvisorMatch | None:
-    """对一位导师产出匹配结果；证据不足时返回 None（宁可少给，不可编造）。"""
-    sources = advisor_source_text if advisor_source_text is not None else _advisor_sources(advisor)
+    """对一位导师产出匹配结果；证据不足时返回 None（宁可少给，不可编造）。
+
+    证据有两路：详情页的「研究领域」和 2027 招生目录的方向。目录方向是官方公开
+    信息，能补上研究标签缺失的导师，也不依赖课题组主页是否维护。
+    """
+    sources = (
+        dict(advisor_source_text)
+        if advisor_source_text is not None
+        else _advisor_sources(advisor)
+    )
+    for admission in advisor.admissions:
+        existing = sources.get(admission.source, "")
+        sources[admission.source] = f"{existing}，{admission.direction}".strip("，")
     if not sources:
         return None
 
@@ -99,6 +110,7 @@ def rerank_one(
     threshold = settings.retrieval.rerank_min_similarity
 
     tag_vectors: list[np.ndarray] | None = None
+    admission_vectors: list[np.ndarray] | None = None
     direction_vectors: list[np.ndarray] | None = None
     student_vector: np.ndarray | None = None
     record_vectors: dict[str, np.ndarray] = {}
@@ -106,6 +118,10 @@ def rerank_one(
         student_vector = embedding.encode([student_text])[0]
         if advisor.research_tags:
             tag_vectors = list(embedding.encode(advisor.research_tags))
+        if advisor.admissions:
+            admission_vectors = list(
+                embedding.encode([admission.direction for admission in advisor.admissions])
+            )
         if profile.target_directions:
             direction_vectors = list(embedding.encode(profile.target_directions))
         if ledger:
@@ -113,6 +129,8 @@ def rerank_one(
             record_vectors = dict(zip(ledger.keys(), statement_vectors))
 
     points: list[MatchPoint] = []
+    matched_tags: list[str] = []
+    matched_tag_vectors: list[np.ndarray | None] = []
     for position, tag in enumerate(advisor.research_tags):
         lexical = _overlap(tag, student_text)
         tag_vector = tag_vectors[position] if tag_vectors is not None else None
@@ -139,6 +157,56 @@ def rerank_one(
                 advisor_refs=[SourceRef(doc_id=doc_id, locator="研究领域", quote=tag)],
             )
         )
+        matched_tags.append(tag)
+        matched_tag_vectors.append(tag_vector)
+        if len(points) >= 3:
+            break
+
+    # 招生目录方向：与研究标签去重后作为独立证据，引文指向目录页。
+    for position, admission in enumerate(advisor.admissions):
+        lexical = _overlap(admission.direction, student_text)
+        admission_vector = (
+            admission_vectors[position] if admission_vectors is not None else None
+        )
+        semantic = _cosine(admission_vector, student_vector)
+        if lexical < 1 and semantic < threshold:
+            continue
+        if any(
+            _overlap(admission.direction, tag) >= 1
+            or _cosine(admission_vector, vector) >= threshold
+            for tag, vector in zip(matched_tags, matched_tag_vectors)
+        ):
+            continue
+
+        record, used_semantic = _supporting_record(
+            admission.direction,
+            ledger,
+            tag_vector=admission_vector,
+            record_vectors=record_vectors,
+        )
+        if record is None:
+            continue
+
+        relation = "在语义上相近" if used_semantic else "相关"
+        note = "（该方向仅推免）" if admission.only_recommendation else ""
+        statement = (
+            f"你的成果「{record.statement[:40]}」与{advisor.name}老师在 "
+            f"{admission.year} 年招生目录中的「{admission.direction}」方向{relation}{note}"
+        )
+        points.append(
+            MatchPoint(
+                dimension="direction",
+                statement=statement[:300],
+                student_ledger_refs=[record.id],
+                advisor_refs=[
+                    SourceRef(
+                        doc_id=admission.source,
+                        locator=f"{admission.year} 招生目录 / {admission.program_code} {admission.direction_code}",
+                        quote=admission.direction,
+                    )
+                ],
+            )
+        )
         if len(points) >= 3:
             break
 
@@ -146,8 +214,9 @@ def rerank_one(
         return None
 
     # 档位按"目标方向覆盖"判断：全部覆盖 → 核心；部分覆盖 → 相邻；只有弱重合 → 需要补充。
-    covered_flags = [
-        any(
+    covered_flags = []
+    for index, direction in enumerate(profile.target_directions):
+        covered = any(
             _overlap(direction, tag) >= 1
             or (
                 direction_vectors is not None
@@ -155,9 +224,16 @@ def rerank_one(
                 and _cosine(direction_vectors[index], tag_vectors[tag_index]) >= threshold
             )
             for tag_index, tag in enumerate(advisor.research_tags)
+        ) or any(
+            _overlap(direction, admission.direction) >= 1
+            or (
+                direction_vectors is not None
+                and admission_vectors is not None
+                and _cosine(direction_vectors[index], admission_vectors[position]) >= threshold
+            )
+            for position, admission in enumerate(advisor.admissions)
         )
-        for index, direction in enumerate(profile.target_directions)
-    ]
+        covered_flags.append(covered)
     if profile.target_directions and all(covered_flags):
         tier = "core"
     elif any(covered_flags):

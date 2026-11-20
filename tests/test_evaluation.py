@@ -12,6 +12,13 @@ from advisor_match.retrieval.index import AdvisorIndex
 from advisor_match.schemas import AdmissionEntry, Advisor, SourceRef
 
 
+class FakeEmbedding:
+    def encode(self, texts):
+        import numpy as np
+
+        return np.vstack([np.ones(2, dtype=np.float32) for _ in texts])
+
+
 def make_advisor(name: str, tags: list[str], direction: str) -> Advisor:
     return Advisor(
         name=name,
@@ -71,6 +78,17 @@ def test_evaluate_beats_or_matches_baselines_on_controlled_data() -> None:
     # 主表顺序把"乙"排在前面，目录基线对"信息检索"画像命中为 0
     assert by_name["catalog"].recall < by_name["pipeline"].recall
     assert all(0.0 <= system.ndcg <= 1.0 for system in report.systems)
+
+
+def test_report_has_program_breakdown_and_weight_grid() -> None:
+    advisors = [make_advisor("甲", ["信息检索"], "信息检索")]
+    index = AdvisorIndex.build(advisors, embedding=FakeEmbedding())
+    profiles = build_catalog_profiles(advisors, n=10, min_relevant=1)
+    report = evaluate(profiles, index, k=1)
+
+    assert "081200" in report.by_program
+    assert len(report.grid) == 5
+    assert {row["bm25_weight"] for row in report.grid} == {0.0, 0.3, 0.5, 0.7, 1.0}
 
 
 def test_report_contains_per_profile_details() -> None:

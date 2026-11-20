@@ -23,6 +23,7 @@ from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from advisor_match.config import settings
 from advisor_match.ingest.advisors import load_advisors
 from advisor_match.retrieval.index import AdvisorIndex
 from advisor_match.retrieval.recall import recall
@@ -125,13 +126,20 @@ class EvalReport:
     profile_count: int
     systems: list[SystemScore] = field(default_factory=list)
     per_profile: list[dict] = field(default_factory=list)
+    #: 按专业代码聚合的混合召回指标。
+    by_program: dict[str, dict] = field(default_factory=dict)
+    #: BM25/向量权重网格，仅在启用向量时计算。
+    grid: list[dict] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
 
 def evaluate(
     profiles: list[EvalProfile], index: AdvisorIndex, *, k: int = 10
 ) -> EvalReport:
-    modes = [("bm25", 1.0, 0.0), ("pipeline", 0.5, 0.5)]
+    modes = [
+        ("bm25", 1.0, 0.0),
+        ("pipeline", settings.retrieval.bm25_weight, settings.retrieval.vector_weight),
+    ]
     if index.vectors is not None:
         modes.append(("vector", 0.0, 1.0))
 
@@ -189,6 +197,49 @@ def evaluate(
     ]:
         recall_score, ndcg_score = average(rows)
         report.systems.append(SystemScore(name=name, recall=recall_score, ndcg=ndcg_score))
+    # 分专业看：避免平均值掩盖某个专业方向的系统性偏差。
+    programs: dict[str, list[dict]] = defaultdict(list)
+    for row in per_profile:
+        program = row["label"].split("/")[0] if "/" in row["label"] else "unknown"
+        programs[program].append(row)
+    for program, rows in sorted(programs.items()):
+        report.by_program[program] = {
+            "profiles": len(rows),
+            "recall": sum(row["pipeline_recall"] for row in rows) / len(rows),
+            "ndcg": sum(row["pipeline_ndcg"] for row in rows) / len(rows),
+        }
+
+    # 权重网格：验证默认 0.5/0.5 是否合理，而不是拍脑袋。
+    if index.vectors is not None:
+        for weight in (0.0, 0.3, 0.5, 0.7, 1.0):
+            rows: list[tuple[float, float]] = []
+            for profile in profiles:
+                ranked = [
+                    advisor.name
+                    for advisor in recall(
+                        profile.profile,
+                        index,
+                        k=len(index.advisors),
+                        bm25_weight=weight,
+                        vector_weight=1.0 - weight,
+                    )
+                ]
+                rows.append(
+                    (
+                        recall_at_k(ranked, profile.ground_truth, k),
+                        ndcg_at_k(ranked, profile.ground_truth, k),
+                    )
+                )
+            recall_score, ndcg_score = average(rows)
+            report.grid.append(
+                {
+                    "bm25_weight": weight,
+                    "vector_weight": round(1.0 - weight, 1),
+                    "recall": recall_score,
+                    "ndcg": ndcg_score,
+                }
+            )
+
     report.notes.append("真值来自 2027 招生目录方向，画像由模板生成，非人工双盲标注")
     report.notes.append("通用大模型直接推荐基线待模型可用后补充")
     return report
@@ -216,6 +267,8 @@ def main(argv: list[str] | None = None) -> int:
         "k": report.k,
         "profile_count": report.profile_count,
         "systems": [asdict(system) for system in report.systems],
+        "by_program": report.by_program,
+        "grid": report.grid,
         "notes": report.notes,
         "per_profile": report.per_profile,
     }
@@ -225,6 +278,30 @@ def main(argv: list[str] | None = None) -> int:
     print(f"profiles: {report.profile_count}  k={report.k}")
     for system in report.systems:
         print(f"{system.name:9s} Recall@{report.k}={system.recall:.3f}  nDCG@{report.k}={system.ndcg:.3f}")
+
+    if report.by_program:
+        print("\nby program:")
+        for program, metrics in report.by_program.items():
+            print(
+                f"  {program}: n={metrics['profiles']}  "
+                f"R={metrics['recall']:.3f}  N={metrics['ndcg']:.3f}"
+            )
+
+    if report.grid:
+        print("\nweight grid (bm25 / vector):")
+        for row in report.grid:
+            print(
+                f"  {row['bm25_weight']:.1f}/{row['vector_weight']:.1f}: "
+                f"R={row['recall']:.3f}  N={row['ndcg']:.3f}"
+            )
+
+    worst = sorted(report.per_profile, key=lambda row: row["pipeline_ndcg"])[:5]
+    print("\nworst 5 profiles:")
+    for row in worst:
+        print(
+            f"  {row['label']}: R={row['pipeline_recall']:.2f} N={row['pipeline_ndcg']:.2f} "
+            f"(GT={row['ground_truth']})"
+        )
     return 0
 
 
