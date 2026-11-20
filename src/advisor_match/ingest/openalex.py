@@ -30,6 +30,10 @@ REQUEST_INTERVAL = 0.2
 MAX_RETRIES = 3
 DOMINANCE_RATIO = 3
 
+#: OpenAlex 同名记录常把不同人的论文合并；只收计算机科学领域的作品，
+#: 宁可少收，也不要把化学/医学/交通的论文挂到计算机系导师名下。
+RELEVANT_FIELDS = {"Computer Science"}
+
 
 def normalize_name(name: str) -> str:
     """去掉空格、点、各类连字符（含 Unicode U+2010）与下划线。"""
@@ -114,12 +118,20 @@ class OpenAlexClient:
         )
         papers: list[Paper] = []
         for item in payload.get("results", []):
+            if is_noise_work(item):
+                continue
             paper = work_to_paper(item)
             if paper is not None:
                 papers.append(paper)
             if len(papers) >= limit:
                 break
         return papers
+
+
+def is_noise_work(work: dict) -> bool:
+    """同名作者记录混入的其他学科作品。"""
+    field = ((work.get("primary_topic") or {}).get("field") or {}).get("display_name")
+    return field not in RELEVANT_FIELDS
 
 
 def _abstract_from_inverted(inverted: dict[str, list[int]] | None) -> str | None:
@@ -301,6 +313,7 @@ __all__ = [
     "OpenAlexReport",
     "Resolution",
     "attach_papers",
+    "is_noise_work",
     "resolve_author",
     "work_to_paper",
 ]

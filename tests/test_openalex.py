@@ -5,6 +5,7 @@ from __future__ import annotations
 from advisor_match.ingest.openalex import (
     AuthorCandidate,
     attach_papers,
+    is_noise_work,
     resolve_author,
     work_to_paper,
 )
@@ -70,6 +71,13 @@ def test_close_candidates_are_ambiguous() -> None:
 def test_no_tsinghua_candidate() -> None:
     client = FakeClient({"Jie Tang": [candidate("Jie Tang", 500, tsinghua=False)]}, {})
     assert resolve_author(Advisor(name="唐杰"), client).status == "none"
+
+
+def test_noise_fields_are_filtered() -> None:
+    chemistry = {"primary_topic": {"field": {"display_name": "Chemistry"}}}
+    cs = {"primary_topic": {"field": {"display_name": "Computer Science"}}}
+    assert is_noise_work(chemistry)
+    assert not is_noise_work(cs)
 
 
 def test_work_to_paper_reconstructs_abstract() -> None:
