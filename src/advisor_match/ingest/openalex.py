@@ -215,11 +215,23 @@ def attach_papers(
     year_from: int = 2021,
     max_per_advisor: int = 10,
     author_map: dict[str, str] | None = None,
+    manual_papers: dict[str, list[Paper]] | None = None,
 ) -> OpenAlexReport:
-    """``author_map`` 是人工核对后的 导师姓名 → OpenAlex 作者 ID。"""
+    """``author_map`` 是人工核对后的 导师姓名 → OpenAlex 作者 ID。
+
+    ``manual_papers`` 用于 OpenAlex 记录被合并、不可信的情况：直接用官方主页
+    题录覆盖，跳过自动检索。
+    """
     author_map = author_map or {}
+    manual_papers = manual_papers or {}
     report = OpenAlexReport()
     for advisor in advisors:
+        if advisor.name in manual_papers:
+            advisor.recent_papers = manual_papers[advisor.name]
+            report.attached += 1
+            report.manual += 1
+            report.per_advisor[advisor.name] = len(advisor.recent_papers)
+            continue
         if advisor.name in author_map:
             author_id = author_map[advisor.name]
             status = "manual"
@@ -275,6 +287,12 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="人工核对后的 JSON：导师姓名 → OpenAlex 作者 ID",
     )
+    parser.add_argument(
+        "--manual-papers",
+        type=Path,
+        default=None,
+        help="官方主页题录 JSON：导师姓名 → [{title, year, venue, authors}]",
+    )
     args = parser.parse_args(argv)
 
     if not settings.openalex_key:
@@ -283,6 +301,12 @@ def main(argv: list[str] | None = None) -> int:
     author_map = (
         json.loads(args.author_map.read_text(encoding="utf-8")) if args.author_map else None
     )
+    manual_papers = None
+    if args.manual_papers:
+        raw = json.loads(args.manual_papers.read_text(encoding="utf-8"))
+        manual_papers = {
+            name: [Paper(**item) for item in items] for name, items in raw.items()
+        }
     advisors = load_advisors(args.advisors)
     report = attach_papers(
         advisors,
@@ -290,6 +314,7 @@ def main(argv: list[str] | None = None) -> int:
         year_from=args.year_from,
         max_per_advisor=args.max_per,
         author_map=author_map,
+        manual_papers=manual_papers,
     )
     save_advisors(advisors, args.out)
 

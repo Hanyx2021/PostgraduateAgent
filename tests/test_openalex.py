@@ -112,6 +112,18 @@ def test_unresolved_advisors_have_stale_papers_cleared() -> None:
     assert advisors[0].recent_papers == []
 
 
+def test_manual_papers_override_resolution() -> None:
+    advisors = [Advisor(name="王五")]
+    client = FakeClient({}, {})
+    report = attach_papers(
+        advisors,  # type: ignore[arg-type]
+        client,  # type: ignore[arg-type]
+        manual_papers={"王五": [Paper(title="Official Page Paper", year=2024)]},
+    )
+    assert advisors[0].recent_papers[0].title == "Official Page Paper"
+    assert report.manual == 1
+
+
 def test_manual_author_map_bypasses_resolution() -> None:
     advisors = [Advisor(name="王五")]
     client = FakeClient({}, {"A9": [Paper(title="Paper", year=2024)]})
