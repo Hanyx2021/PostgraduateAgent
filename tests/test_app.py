@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import date
 from pathlib import Path
@@ -114,6 +115,36 @@ def test_generating_draft_shows_evidence_and_confirmation(advisors_file: Path) -
     assert any("已留痕" in message.value for message in app.success)
     log = Path(os.environ["AM_CONFIRMATIONS_PATH"])
     assert log.exists() and log.read_text(encoding="utf-8").strip()
+
+
+def test_sentence_editing_and_deletion(advisors_file: Path) -> None:
+    app = run_matching_flow(AppTest.from_file(str(APP), default_timeout=30).run())
+    app.selectbox(key="advisor_select").set_value("李老师").run()
+    app.button(key="generate_draft").click().run()
+
+    editors = [item for item in app.text_area if item.key and item.key.startswith("edit-")]
+    assert len(editors) >= 4
+    editors[0].set_value("我改写后的第一句。")
+    deleters = [item for item in app.checkbox if item.key and item.key.startswith("del-")]
+    deleters[1].check()
+    app.run()
+    app.button(key="apply_edits").click().run()
+
+    assert not app.exception
+    values = [item.value for item in app.text_area if item.key and item.key.startswith("edit-")]
+    assert "我改写后的第一句。" in values
+    assert len(values) == len(editors) - 1
+
+    for box in app.checkbox:
+        if box.label == "已核对":
+            box.check()
+    app.run()
+    app.button(key="confirm_draft").click().run()
+
+    assert any("已留痕" in message.value for message in app.success)
+    log = Path(os.environ["AM_CONFIRMATIONS_PATH"])
+    record = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
+    assert record["student_edit_ratio"] > 0
 
 
 def test_missing_email_blocks_draft(advisors_file: Path) -> None:

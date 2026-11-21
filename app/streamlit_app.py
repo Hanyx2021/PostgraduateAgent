@@ -22,9 +22,9 @@ from advisor_match.email.confirm import (
     save_confirmation,
 )
 from advisor_match.email.draft import render_plain_text
-from advisor_match.email.validator import audit_refs, sentence_origin
+from advisor_match.email.validator import audit_refs, sentence_origin, validate_draft
 from advisor_match.ingest.advisors import load_advisors
-from advisor_match.pipeline import RecipientMismatch, run_email, run_matching
+from advisor_match.pipeline import EmailResult, RecipientMismatch, run_email, run_matching
 from advisor_match.retrieval.index import AdvisorIndex
 from advisor_match.retrieval.vector import load_embedding
 from advisor_match.schemas import (
@@ -285,6 +285,8 @@ with tab_email:
                         st.session_state["draft"] = email_result
                         st.session_state["contact"] = contact
                         st.session_state["confirmed"] = {}
+                        st.session_state["revision"] = 0
+                        st.session_state["edited_total"] = 0
                         st.session_state.pop("confirmation", None)
 
             email_result = st.session_state.get("draft")
@@ -296,21 +298,64 @@ with tab_email:
                     f"丢弃无据陈述 {len(email_result.report.dropped)} 句"
                 )
 
+                revision = st.session_state.setdefault("revision", 0)
+                edited_total = st.session_state.setdefault("edited_total", 0)
                 confirmed: dict[str, bool] = st.session_state.setdefault("confirmed", {})
+
                 for paragraph in draft.paragraphs:
                     st.markdown(f"**{paragraph.role}**")
                     for index, sentence in enumerate(paragraph.sentences):
-                        key = f"{paragraph.role}-{index}"
-                        col_text, col_check = st.columns([5, 1])
+                        sid = f"{revision}-{paragraph.role}-{index}"
+                        col_text, col_ops = st.columns([5, 1])
                         with col_text:
-                            st.write(sentence.text)
+                            st.text_area(
+                                "句子",
+                                value=sentence.text,
+                                key=f"edit-{sid}",
+                                height=70,
+                                label_visibility="collapsed",
+                            )
                             if sentence.ledger_refs:
                                 origins = sentence_origin(sentence, ledger)
-                                st.caption("依据：" + "；".join(f"{item.id} {item.statement}" for item in origins))
+                                st.caption(
+                                    "依据："
+                                    + "；".join(f"{item.id} {item.statement}" for item in origins)
+                                )
                             elif sentence.kind != "fact":
                                 st.caption("非事实陈述（不绑定台账）")
-                        with col_check:
-                            confirmed[key] = st.checkbox("已核对", key=key, label_visibility="collapsed")
+                        with col_ops:
+                            confirmed[sid] = st.checkbox(
+                                "已核对", key=f"check-{sid}", label_visibility="collapsed"
+                            )
+                            st.checkbox("删除", key=f"del-{sid}")
+
+                if st.button("应用修改并重新校验", key="apply_edits"):
+                    new_paragraphs = []
+                    edited = 0
+                    for paragraph in draft.paragraphs:
+                        kept = []
+                        for index, sentence in enumerate(paragraph.sentences):
+                            sid = f"{revision}-{paragraph.role}-{index}"
+                            text = str(st.session_state.get(f"edit-{sid}", sentence.text)).strip()
+                            if st.session_state.get(f"del-{sid}") or not text:
+                                continue
+                            if text != sentence.text:
+                                edited += 1
+                            kept.append(sentence.model_copy(update={"text": text}))
+                        if kept:
+                            new_paragraphs.append(paragraph.model_copy(update={"sentences": kept}))
+
+                    if not new_paragraphs:
+                        st.error("至少要保留一句。")
+                    else:
+                        updated = draft.model_copy(update={"paragraphs": new_paragraphs})
+                        updated, report = validate_draft(updated, ledger)
+                        st.session_state["draft"] = EmailResult(draft=updated, report=report)
+                        st.session_state["edited_total"] = edited_total + edited
+                        st.session_state["revision"] = revision + 1
+                        st.session_state["confirmed"] = {}
+                        st.session_state.pop("confirmation", None)
+                        st.rerun()
 
                 st.divider()
                 all_confirmed = bool(confirmed) and all(confirmed.values())
@@ -320,7 +365,7 @@ with tab_email:
                         draft,
                         st.session_state["contact"],
                         refs_used=audit_refs(draft, ledger),
-                        edited=0,
+                        edited=st.session_state.get("edited_total", 0),
                     )
                     save_confirmation(record, CONFIRMATION_LOG)
                     st.session_state["confirmation"] = record

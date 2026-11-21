@@ -48,6 +48,10 @@ def _student_text(profile: StudentProfile) -> str:
     return " ".join(part for part in parts if part)
 
 
+def _teacher_name(name: str) -> str:
+    return name if name.endswith("老师") else f"{name}老师"
+
+
 def _cosine(left: np.ndarray | None, right: np.ndarray | None) -> float:
     if left is None or right is None:
         return 0.0
@@ -206,7 +210,7 @@ def rerank_one(
 
             relation = "在语义上相近" if used_semantic else "相关"
             statement = (
-                f"你的成果「{record.statement[:40]}」与{advisor.name}老师的研究方向"
+                f"你的成果「{record.statement[:40]}」与{_teacher_name(advisor.name)}的研究方向"
                 f"「{tag}」{relation}"
             )
             points.append(
@@ -250,7 +254,7 @@ def rerank_one(
             relation = "在语义上相近" if used_semantic else "相关"
             note = "（该方向仅推免）" if admission.only_recommendation else ""
             statement = (
-                f"你的成果「{record.statement[:40]}」与{advisor.name}老师在 "
+                f"你的成果「{record.statement[:40]}」与{_teacher_name(advisor.name)}在 "
                 f"{admission.year} 年招生目录中的「{admission.direction}」方向{relation}{note}"
             )
             points.append(
