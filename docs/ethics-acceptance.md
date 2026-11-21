@@ -25,7 +25,7 @@
 | 隐私 | 脱敏后调用、默认不留存、可一键删除 | `settings.persist_prompts=False`；`privacy/redact`（待实现） |
 | 可解释性 | 每条理由绑定原文；主动列出不匹配之处 | `MatchPoint` / `Gap` 均要求 `SourceRef`，`AdvisorMatch` 无总分 |
 | 安全可靠 | 抓取内容仅作数据；信息不足时停止 | `guards/injection.py`；`rerank_one` 证据不足返回 None |
-| 责任 | 逐封人工确认并留痕；导师纠错通道；操作日志 | `email/confirm.py`；导师纠错通道待建 |
+| 责任 | 逐封人工确认并留痕；导师纠错通道；操作日志 | `email/confirm.py`：确认后写 `confirmations.jsonl`（只记行为与台账 ID，不记正文）；导师纠错通道待建 |
 
 ## 每次提交前自检
 

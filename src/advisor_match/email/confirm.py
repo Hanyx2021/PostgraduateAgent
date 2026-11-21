@@ -8,8 +8,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import json
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from pathlib import Path
 
 from advisor_match.schemas import AdvisorContact, EmailDraft
 
@@ -44,3 +46,26 @@ def build_record(
         refs_used=refs_used,
         student_edit_ratio=0.0 if total == 0 else edited / total,
     )
+
+
+def save_confirmation(record: ConfirmationRecord, path: Path) -> None:
+    """追加到本地日志。只记行为与台账 ID，不记邮件正文。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(asdict(record), ensure_ascii=False, default=str) + "\n")
+
+
+def load_confirmations(path: Path, *, limit: int = 10) -> list[dict]:
+    if not path.exists():
+        return []
+    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return [json.loads(line) for line in lines[-limit:]]
+
+
+__all__ = [
+    "ConfirmationRecord",
+    "build_record",
+    "load_confirmations",
+    "mark_confirmed",
+    "save_confirmation",
+]

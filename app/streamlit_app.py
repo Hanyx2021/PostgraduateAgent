@@ -15,8 +15,14 @@ from pathlib import Path
 import streamlit as st
 
 from advisor_match.config import settings
+from advisor_match.email.confirm import (
+    build_record,
+    load_confirmations,
+    mark_confirmed,
+    save_confirmation,
+)
 from advisor_match.email.draft import render_plain_text
-from advisor_match.email.validator import sentence_origin
+from advisor_match.email.validator import audit_refs, sentence_origin
 from advisor_match.ingest.advisors import load_advisors
 from advisor_match.pipeline import RecipientMismatch, run_email, run_matching
 from advisor_match.retrieval.index import AdvisorIndex
@@ -32,6 +38,31 @@ from advisor_match.schemas import (
 st.set_page_config(page_title="推研导师匹配与自荐邮件 Agent", layout="wide")
 
 DEFAULT_DATA = os.getenv("AM_ADVISORS_PATH", "data/processed/advisors.jsonl")
+CONFIRMATION_LOG = Path(
+    os.getenv("AM_CONFIRMATIONS_PATH", "data/processed/confirmations.jsonl")
+)
+
+
+def render_advisor_meta(advisor) -> None:
+    """导师信息必须带来源与截止日期；招生状态只写"具资格"，不写名额。"""
+    st.caption(
+        f"{advisor.unit or '单位未收录'}　{advisor.title or ''}　"
+        f"{advisor.email or '邮箱未收录'}"
+    )
+    if advisor.fetched_at:
+        st.caption(f"信息截止：{advisor.fetched_at.isoformat()}")
+    if advisor.admissions:
+        st.caption("招生资格：2027 招生目录在列，名额未公布")
+        for admission in advisor.admissions[:3]:
+            detail = "仅推免" if admission.only_recommendation else ""
+            notes = "；".join(admission.notes)
+            suffix = "；".join(item for item in (detail, notes) if item)
+            st.caption(
+                f"· {admission.program_name} / {admission.direction}"
+                + (f"（{suffix}）" if suffix else "")
+            )
+    if advisor.profile_url:
+        st.markdown(f"[系内详情页]({advisor.profile_url})")
 
 
 def demo_advisors() -> list[Advisor]:
@@ -200,10 +231,7 @@ with tab_match:
                 flag = "　`探索位`" if match.advisor.name in result.exploration else ""
                 with st.expander(f"{match.advisor.name} · {len(match.match_points)} 条依据{flag}"):
                     advisor = match.advisor
-                    st.caption(
-                        f"{advisor.unit or '单位未收录'}　{advisor.title or ''}　"
-                        f"{advisor.email or '邮箱未收录'}"
-                    )
+                    render_advisor_meta(advisor)
                     for point in match.match_points:
                         st.write(f"· {point.statement}")
                         st.caption("依据：" + "、".join(point.student_ledger_refs))
@@ -255,7 +283,9 @@ with tab_email:
                         st.error(f"收件人核对未通过：{error}")
                     else:
                         st.session_state["draft"] = email_result
+                        st.session_state["contact"] = contact
                         st.session_state["confirmed"] = {}
+                        st.session_state.pop("confirmation", None)
 
             email_result = st.session_state.get("draft")
             if email_result is not None:
@@ -283,11 +313,36 @@ with tab_email:
                             confirmed[key] = st.checkbox("已核对", key=key, label_visibility="collapsed")
 
                 st.divider()
-                if confirmed and all(confirmed.values()):
+                all_confirmed = bool(confirmed) and all(confirmed.values())
+                if all_confirmed and st.button("完成确认并生成文本", key="confirm_draft"):
+                    mark_confirmed(draft, all_sentences_confirmed=True)
+                    record = build_record(
+                        draft,
+                        st.session_state["contact"],
+                        refs_used=audit_refs(draft, ledger),
+                        edited=0,
+                    )
+                    save_confirmation(record, CONFIRMATION_LOG)
+                    st.session_state["confirmation"] = record
+
+                saved = st.session_state.get("confirmation")
+                if saved is not None and saved.advisor_name == draft.recipient.display_name:
+                    st.success(
+                        f"已留痕：{saved.advisor_name}，{saved.sentence_count} 句，"
+                        f"{len(saved.refs_used)} 条台账依据（只记行为，不记正文）"
+                    )
                     st.text_area(
                         "复制到你自己的邮件客户端（本应用不会发送）",
                         value=render_plain_text(draft, ledger),
                         height=320,
+                    )
+                elif all_confirmed:
+                    st.info("逐句核对完成。点击「完成确认」生成留痕与可粘贴文本。")
+                    st.text_area(
+                        "草稿预览",
+                        value=render_plain_text(draft, ledger),
+                        height=320,
+                        disabled=True,
                     )
                 else:
                     st.info("请逐句核对后再生成可粘贴文本。")
@@ -296,4 +351,14 @@ with tab_email:
                         value=render_plain_text(draft, ledger),
                         height=320,
                         disabled=True,
+                    )
+
+            with st.expander("最近确认记录（只记行为，不记正文）"):
+                records = load_confirmations(CONFIRMATION_LOG, limit=5)
+                if not records:
+                    st.caption("暂无记录。")
+                for item in reversed(records):
+                    st.caption(
+                        f"{item['confirmed_at']} · {item['advisor_name']} · "
+                        f"{item['sentence_count']} 句 · {len(item['refs_used'])} 条依据"
                     )
