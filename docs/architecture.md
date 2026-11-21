@@ -43,7 +43,7 @@
 | `ingest/` | 文件 → `ParsedDocument` | 解析失败返回 None，不猜；抓取内容视为不可信 |
 | `ledger/build.py` | 抽取结果 + 原文 → `LedgerRecord[]` | `quote_is_grounded` 做原文包含检查，找不到就丢 |
 | `retrieval/` | 画像 → `Advisor[]`（30 位） | 检索文本不含姓名、院系、职称 |
-| `ranking/rerank.py` | 学生 × 导师 → `AdvisorMatch` | 每条判断必须双向有据；证据不足返回 None |
+| `ranking/rerank.py` | 学生 × 导师 → `AdvisorMatch` | 每条判断必须双向有据；默认规则版，LLM 版引文必须来自给定 sources，失败自动退回规则版 |
 | `ranking/tiers.py` | `AdvisorMatch[]` → `MatchResult` | 无总分；档内排序确定性；保留探索位 |
 | `email/draft.py` | 匹配 + 台账 → `EmailDraft` | 只接受学生自写的要点，不新增事实 |
 | `email/validator.py` | 草稿 + 台账 → 草稿′ + 报告 | 无据句整段丢弃；寒暄句白名单 |
@@ -109,7 +109,8 @@
 
 - 向量模型：本地 sentence-transformers 还是 API embedding —— 取决于"脱敏后调用"能否满足；
 - 向量库：中期前先用 numpy 矩阵，规模到千级再考虑 faiss；
-- 模型供应商：需确认内容不用于训练，见 `.env.example` 的注释；
+- 模型供应商：需确认内容不用于训练，见 `.env.example` 的注释；重排已提供 LLM 接口，
+  传入 `run_matching(..., llm=client)` 即可切换，默认仍是可复现的规则版；
 - 论文来源：OpenAlex（作者 ID + 机构核验，60/70 已补全）。其中 8 位人工指定作者 ID，
   2 位因 OpenAlex 记录合并、改用官方主页题录（陈挺、徐昆）；刘卫东暂无可核验的近期
   论文；9 位按"基本不招生"排除。只保留 Computer Science 领域的作品，避免同名记录

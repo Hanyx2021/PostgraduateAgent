@@ -34,6 +34,9 @@ python -m advisor_match.ingest.openalex --advisors data/processed/advisors.jsonl
 # 自动消歧失败时，生成人工核对清单
 python -m advisor_match.ingest.review
 
+# 一键重建：抓目录 → 抓名录 → 抓详情页 → OpenAlex → 落盘
+python -m advisor_match.ingest.rebuild --catalog-url "<2027 招生目录 URL>"
+
 # 命令行跑一次匹配（需要本地 data/processed/advisors.jsonl）
 python -m advisor_match.pipeline --target "信息检索,多模态学习" \
   --statement "完成多模态检索增强生成的课程项目" --top 8
