@@ -10,12 +10,15 @@
 
 from __future__ import annotations
 
+import json
 import re
 
 import numpy as np
 
 from advisor_match.config import settings
 from advisor_match.ledger.build import quote_is_grounded
+from advisor_match.llm import prompts
+from advisor_match.llm.client import LLMClient
 from advisor_match.retrieval.recall import build_query
 from advisor_match.retrieval.vector import EmbeddingProvider
 from advisor_match.schemas import (
@@ -81,12 +84,66 @@ def _advisor_sources(advisor: Advisor) -> dict[str, str]:
     return {ref.doc_id: ref.quote for ref in advisor.sources}
 
 
+def _extract_json(raw: str) -> dict:
+    start, end = raw.find("{"), raw.rfind("}")
+    if start < 0 or end <= start:
+        raise ValueError("模型输出中没有 JSON 对象")
+    return json.loads(raw[start : end + 1])
+
+
+def _llm_points(
+    profile: StudentProfile,
+    advisor: Advisor,
+    ledger: dict[str, LedgerRecord],
+    sources: dict[str, str],
+    llm: LLMClient,
+) -> list[MatchPoint]:
+    """让模型给判断，但引文必须来自给定 sources；不合规的判断直接丢弃。"""
+    user = prompts.RERANK_USER.format(
+        ledger_json=json.dumps(
+            [record.model_dump() for record in ledger.values()], ensure_ascii=False
+        ),
+        advisor_json=advisor.model_dump_json(),
+        sources_json=json.dumps(sources, ensure_ascii=False),
+    )
+    try:
+        data = _extract_json(llm.complete(system=prompts.RERANK_SYSTEM, user=user))
+    except Exception:  # noqa: BLE001 - 模型不可用时退回规则版
+        return []
+
+    points: list[MatchPoint] = []
+    for item in data.get("match_points", [])[:3]:
+        if not isinstance(item, dict):
+            continue
+        refs = [ref for ref in item.get("student_ledger_refs", []) if ref in ledger]
+        statement = str(item.get("statement", "")).strip()
+        doc_id = str(item.get("source_doc_id", ""))
+        quote = str(item.get("advisor_quote", "")).strip()
+        dimension = item.get("dimension", "direction")
+        if dimension not in {"direction", "method", "experience", "resource"}:
+            dimension = "direction"
+        if not refs or not statement or doc_id not in sources or not quote:
+            continue
+        if not quote_is_grounded(quote, sources[doc_id]):
+            continue
+        points.append(
+            MatchPoint(
+                dimension=dimension,
+                statement=statement[:300],
+                student_ledger_refs=refs,
+                advisor_refs=[SourceRef(doc_id=doc_id, locator="模型判断", quote=quote[:800])],
+            )
+        )
+    return points
+
+
 def rerank_one(
     profile: StudentProfile,
     advisor: Advisor,
     *,
     advisor_source_text: dict[str, str] | None = None,
     embedding: EmbeddingProvider | None = None,
+    llm: LLMClient | None = None,
 ) -> AdvisorMatch | None:
     """对一位导师产出匹配结果；证据不足时返回 None（宁可少给，不可编造）。
 
@@ -129,86 +186,89 @@ def rerank_one(
             record_vectors = dict(zip(ledger.keys(), statement_vectors))
 
     points: list[MatchPoint] = []
-    matched_tags: list[str] = []
-    matched_tag_vectors: list[np.ndarray | None] = []
-    for position, tag in enumerate(advisor.research_tags):
-        lexical = _overlap(tag, student_text)
-        tag_vector = tag_vectors[position] if tag_vectors is not None else None
-        semantic = _cosine(tag_vector, student_vector)
-        if lexical < 1 and semantic < threshold:
-            continue
+    if llm is not None:
+        points = _llm_points(profile, advisor, ledger, sources, llm)
+    if not points:
+        matched_tags: list[str] = []
+        matched_tag_vectors: list[np.ndarray | None] = []
+        for position, tag in enumerate(advisor.research_tags):
+            lexical = _overlap(tag, student_text)
+            tag_vector = tag_vectors[position] if tag_vectors is not None else None
+            semantic = _cosine(tag_vector, student_vector)
+            if lexical < 1 and semantic < threshold:
+                continue
 
-        record, used_semantic = _supporting_record(
-            tag, ledger, tag_vector=tag_vector, record_vectors=record_vectors
-        )
-        if record is None:
-            continue
-
-        relation = "在语义上相近" if used_semantic else "相关"
-        statement = (
-            f"你的成果「{record.statement[:40]}」与{advisor.name}老师的研究方向"
-            f"「{tag}」{relation}"
-        )
-        points.append(
-            MatchPoint(
-                dimension="direction",
-                statement=statement[:300],
-                student_ledger_refs=[record.id],
-                advisor_refs=[SourceRef(doc_id=doc_id, locator="研究领域", quote=tag)],
+            record, used_semantic = _supporting_record(
+                tag, ledger, tag_vector=tag_vector, record_vectors=record_vectors
             )
-        )
-        matched_tags.append(tag)
-        matched_tag_vectors.append(tag_vector)
-        if len(points) >= 3:
-            break
+            if record is None:
+                continue
 
-    # 招生目录方向：与研究标签去重后作为独立证据，引文指向目录页。
-    for position, admission in enumerate(advisor.admissions):
-        lexical = _overlap(admission.direction, student_text)
-        admission_vector = (
-            admission_vectors[position] if admission_vectors is not None else None
-        )
-        semantic = _cosine(admission_vector, student_vector)
-        if lexical < 1 and semantic < threshold:
-            continue
-        if any(
-            _overlap(admission.direction, tag) >= 1
-            or _cosine(admission_vector, vector) >= threshold
-            for tag, vector in zip(matched_tags, matched_tag_vectors)
-        ):
-            continue
-
-        record, used_semantic = _supporting_record(
-            admission.direction,
-            ledger,
-            tag_vector=admission_vector,
-            record_vectors=record_vectors,
-        )
-        if record is None:
-            continue
-
-        relation = "在语义上相近" if used_semantic else "相关"
-        note = "（该方向仅推免）" if admission.only_recommendation else ""
-        statement = (
-            f"你的成果「{record.statement[:40]}」与{advisor.name}老师在 "
-            f"{admission.year} 年招生目录中的「{admission.direction}」方向{relation}{note}"
-        )
-        points.append(
-            MatchPoint(
-                dimension="direction",
-                statement=statement[:300],
-                student_ledger_refs=[record.id],
-                advisor_refs=[
-                    SourceRef(
-                        doc_id=admission.source,
-                        locator=f"{admission.year} 招生目录 / {admission.program_code} {admission.direction_code}",
-                        quote=admission.direction,
-                    )
-                ],
+            relation = "在语义上相近" if used_semantic else "相关"
+            statement = (
+                f"你的成果「{record.statement[:40]}」与{advisor.name}老师的研究方向"
+                f"「{tag}」{relation}"
             )
-        )
-        if len(points) >= 3:
-            break
+            points.append(
+                MatchPoint(
+                    dimension="direction",
+                    statement=statement[:300],
+                    student_ledger_refs=[record.id],
+                    advisor_refs=[SourceRef(doc_id=doc_id, locator="研究领域", quote=tag)],
+                )
+            )
+            matched_tags.append(tag)
+            matched_tag_vectors.append(tag_vector)
+            if len(points) >= 3:
+                break
+
+        # 招生目录方向：与研究标签去重后作为独立证据，引文指向目录页。
+        for position, admission in enumerate(advisor.admissions):
+            lexical = _overlap(admission.direction, student_text)
+            admission_vector = (
+                admission_vectors[position] if admission_vectors is not None else None
+            )
+            semantic = _cosine(admission_vector, student_vector)
+            if lexical < 1 and semantic < threshold:
+                continue
+            if any(
+                _overlap(admission.direction, tag) >= 1
+                or _cosine(admission_vector, vector) >= threshold
+                for tag, vector in zip(matched_tags, matched_tag_vectors)
+            ):
+                continue
+
+            record, used_semantic = _supporting_record(
+                admission.direction,
+                ledger,
+                tag_vector=admission_vector,
+                record_vectors=record_vectors,
+            )
+            if record is None:
+                continue
+
+            relation = "在语义上相近" if used_semantic else "相关"
+            note = "（该方向仅推免）" if admission.only_recommendation else ""
+            statement = (
+                f"你的成果「{record.statement[:40]}」与{advisor.name}老师在 "
+                f"{admission.year} 年招生目录中的「{admission.direction}」方向{relation}{note}"
+            )
+            points.append(
+                MatchPoint(
+                    dimension="direction",
+                    statement=statement[:300],
+                    student_ledger_refs=[record.id],
+                    advisor_refs=[
+                        SourceRef(
+                            doc_id=admission.source,
+                            locator=f"{admission.year} 招生目录 / {admission.program_code} {admission.direction_code}",
+                            quote=admission.direction,
+                        )
+                    ],
+                )
+            )
+            if len(points) >= 3:
+                break
 
     if not points:
         return None

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from advisor_match.ranking.rerank import rerank_one, verify_grounding
 from advisor_match.schemas import (
     AdmissionEntry,
@@ -102,6 +104,31 @@ def test_semantic_overlap_can_create_evidence_point() -> None:
     assert match.tier == "core"
 
 
+class FakeLLM:
+    def __init__(self, response: str) -> None:
+        self.response = response
+
+    def complete(self, *, system: str, user: str, temperature: float = 0.0) -> str:
+        return self.response
+
+
+def llm_response(quote: str = "信息检索", statement: str = "模型给出的判断") -> str:
+    return json.dumps(
+        {
+            "match_points": [
+                {
+                    "dimension": "direction",
+                    "statement": statement,
+                    "student_ledger_refs": ["L-0001"],
+                    "source_doc_id": "profile",
+                    "advisor_quote": quote,
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+
 def make_advisor_with_admission(direction: str) -> Advisor:
     return Advisor(
         name="陈老师",
@@ -137,6 +164,31 @@ def test_admission_does_not_duplicate_tag_evidence() -> None:
     match = rerank_one(profile, advisor)
     assert match is not None
     assert len(match.match_points) == 1
+
+
+def test_llm_points_are_used_when_quote_is_grounded() -> None:
+    profile = make_profile(["信息检索"], "做过信息检索课程项目")
+    match = rerank_one(profile, make_advisor(["信息检索"]), llm=FakeLLM(llm_response()))
+    assert match is not None
+    assert match.match_points[0].statement == "模型给出的判断"
+    assert match.match_points[0].advisor_refs[0].quote == "信息检索"
+
+
+def test_llm_fabricated_quote_falls_back_to_rule_points() -> None:
+    profile = make_profile(["信息检索"], "做过信息检索课程项目")
+    match = rerank_one(
+        profile, make_advisor(["信息检索"]), llm=FakeLLM(llm_response(quote="不存在的研究方向"))
+    )
+    assert match is not None
+    assert all("模型给出的判断" not in point.statement for point in match.match_points)
+    assert match.match_points
+
+
+def test_invalid_llm_output_falls_back_to_rule_points() -> None:
+    profile = make_profile(["信息检索"], "做过信息检索课程项目")
+    match = rerank_one(profile, make_advisor(["信息检索"]), llm=FakeLLM("这不是 JSON"))
+    assert match is not None
+    assert match.match_points
 
 
 def test_verify_grounding_drops_fabricated_quote() -> None:

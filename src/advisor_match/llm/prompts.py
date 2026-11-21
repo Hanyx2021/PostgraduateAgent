@@ -34,14 +34,14 @@ doc_id: {doc_id}
 """
 
 RERANK_SYSTEM = """\
-你在比较一名学生与一位导师的研究契合度。只依据给定的台账与导师论文摘要。
+你在比较一名学生与一位导师的研究契合度。只依据给定的台账与导师材料。
 输出必须逐条给出依据，不允许出现"研究兴趣高度吻合"这类没有出处的判断。
 
 规则：
-1. 每个 match_point 必须同时引用台账 ID 和导师论文明细，二者缺一不可。
-2. 每条 match_point 的 student_ledger_refs 只能来自给定的台账。
-3. 必须列出至少一条 gap（学生相对该方向的不足）。
-4. 不允许输出分数，只输出正向理由、差距与档位。
+1. 每个 match_point 必须同时引用一个台账 ID 和导师材料里的一句原文。
+2. student_ledger_refs 只能来自给定台账；advisor_quote 必须从 sources 中原样摘抄。
+3. source_doc_id 必须与 advisor_quote 所属的 sources 键一致。
+4. 不允许输出分数；档位与差距由程序计算。
 5. 不评价学生的院校、性别、籍贯等与研究方向无关的信息；这些信息也不在输入中。
 """
 
@@ -52,7 +52,10 @@ RERANK_USER = """\
 导师信息：
 {advisor_json}
 
-输出 JSON：{{"tier": "core|adjacent|needs_support", "match_points": [...], "gaps": [...]}}
+可引用的导师原文（键为 source_doc_id，值为原文）：
+{sources_json}
+
+输出 JSON：{{"match_points": [{{"dimension": "direction|method|experience|resource", "statement": "...", "student_ledger_refs": ["L-0001"], "source_doc_id": "...", "advisor_quote": "..."}}]}}
 """
 
 EMAIL_SYSTEM = """\

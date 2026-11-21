@@ -66,6 +66,7 @@ def run_matching(
     *,
     advisor_source_text: dict[str, dict[str, str]] | None = None,
     keep_k: int | None = None,
+    llm: LLMClient | None = None,
 ) -> tuple[MatchResult, list[StageLog]]:
     """执行第 2–4 步。入口处强制检查画像不含敏感字段。
 
@@ -84,6 +85,7 @@ def run_matching(
             advisor,
             advisor_source_text=sources,
             embedding=index.embedding,
+            llm=llm,
         )
         if match is not None:
             matches.append(match)
