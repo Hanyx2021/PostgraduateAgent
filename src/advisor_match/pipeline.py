@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,7 +25,7 @@ from advisor_match.ranking.rerank import rerank_one
 from advisor_match.ranking.tiers import assemble, selected_count, tier_label
 from advisor_match.retrieval.index import AdvisorIndex
 from advisor_match.retrieval.recall import recall
-from advisor_match.retrieval.vector import load_embedding
+from advisor_match.retrieval.vector import LockedEmbedding, load_embedding
 from advisor_match.schemas import (
     AdvisorContact,
     AdvisorMatch,
@@ -80,18 +81,28 @@ def run_matching(
     logs = [StageLog("recall", len(index.advisors), len(candidates))]
 
     top = settings.llm_rerank_top if llm_rerank_top is None else llm_rerank_top
-    matches: list[AdvisorMatch] = []
-    for position, advisor in enumerate(candidates):
+    embedding = LockedEmbedding(index.embedding) if index.embedding is not None else None
+
+    def rerank(advisor: Advisor, use_llm: bool) -> AdvisorMatch | None:
         sources = advisor_source_text.get(advisor.name) if advisor_source_text else None
-        match = rerank_one(
+        return rerank_one(
             profile,
             advisor,
             advisor_source_text=sources,
-            embedding=index.embedding,
-            llm=llm if position < top else None,
+            embedding=embedding,
+            llm=llm if use_llm else None,
         )
-        if match is not None:
-            matches.append(match)
+
+    if llm is not None and top > 0 and candidates:
+        head, tail = candidates[:top], candidates[top:]
+        workers = max(1, min(settings.llm_rerank_workers, len(head)))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            head_results = list(pool.map(lambda advisor: rerank(advisor, True), head))
+        results = [*head_results, *(rerank(advisor, False) for advisor in tail)]
+    else:
+        results = [rerank(advisor, False) for advisor in candidates]
+
+    matches = [match for match in results if match is not None]
     logs.append(StageLog("rerank", len(candidates), len(matches)))
 
     result = assemble(matches, keep_k=keep_k)

@@ -64,6 +64,11 @@ class Settings(BaseModel):
     openalex_key: str | None = os.getenv("AM_OPENALEX_KEY")
     #: 模型重排只对召回的前 N 位调用，控制时延与费用。
     llm_rerank_top: int = int(os.getenv("AM_LLM_RERANK_TOP", "10"))
+    #: 并发调用数；注意平台限流，默认 4。
+    llm_rerank_workers: int = int(os.getenv("AM_LLM_RERANK_WORKERS", "4"))
+    #: 模型响应缓存（只存返回文本，不存 prompt）。
+    llm_cache_dir: str = os.getenv("AM_LLM_CACHE_DIR", "data/cache/llm")
+    llm_cache_ttl_days: int = int(os.getenv("AM_LLM_CACHE_TTL_DAYS", "7"))
     llm_provider: str = os.getenv("AM_LLM_PROVIDER", "stub")
     llm_base_url: str | None = os.getenv("AM_LLM_BASE_URL")
     llm_model: str | None = os.getenv("AM_LLM_MODEL")

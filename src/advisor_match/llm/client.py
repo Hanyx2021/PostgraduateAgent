@@ -89,7 +89,7 @@ class OpenAICompatibleClient:
         return str(content)
 
 
-def get_client() -> LLMClient:
+def get_client(*, use_cache: bool = True) -> LLMClient:
     """按配置返回客户端。未配置密钥时返回 stub，保证离线也能跑测试。"""
     if (
         settings.llm_provider != "stub"
@@ -97,11 +97,16 @@ def get_client() -> LLMClient:
         and settings.llm_base_url
         and settings.llm_model
     ):
-        return OpenAICompatibleClient(
+        client: LLMClient = OpenAICompatibleClient(
             base_url=settings.llm_base_url,
             api_key=settings.llm_api_key,
             model=settings.llm_model,
         )
+        if use_cache:
+            from advisor_match.llm.cache import CachedLLMClient
+
+            client = CachedLLMClient(client)
+        return client
     return StubLLMClient()
 
 

@@ -10,6 +10,7 @@ embedding API 的主要原因。
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Protocol
 
@@ -42,6 +43,18 @@ class BGEEmbedding:
         return np.asarray(vectors, dtype=np.float32)
 
 
+class LockedEmbedding:
+    """线程安全的 embedding 包装：模型推理不并发，只把网络调用放出去。"""
+
+    def __init__(self, inner: EmbeddingProvider) -> None:
+        self.inner = inner
+        self._lock = threading.Lock()
+
+    def encode(self, texts: list[str]) -> np.ndarray:
+        with self._lock:
+            return self.inner.encode(texts)
+
+
 def resolve_model_path() -> Path:
     path = Path(settings.embedding_model or "")
     return path if path.is_absolute() else REPO_ROOT / path
@@ -67,6 +80,7 @@ def build_matrix(texts: list[str], embedding: EmbeddingProvider) -> np.ndarray:
 __all__ = [
     "BGEEmbedding",
     "EmbeddingProvider",
+    "LockedEmbedding",
     "build_matrix",
     "load_embedding",
     "resolve_model_path",

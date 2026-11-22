@@ -144,10 +144,12 @@ with st.sidebar:
     if use_llm:
         st.caption(f"模型：{settings.llm_model or '未配置'}")
     use_llm_rerank = st.checkbox(
-        f"使用模型重排（较慢，仅前 {settings.llm_rerank_top} 位）",
+        f"使用模型重排（仅前 {settings.llm_rerank_top} 位）",
         value=False,
         key="use_llm_rerank",
     )
+    if use_llm_rerank:
+        st.caption(f"并发 {settings.llm_rerank_workers} 路；结果缓存在本地，重复匹配会快很多。")
 
     st.subheader("你的材料")
     target_text = st.text_input("目标方向（逗号分隔）", placeholder="信息检索, 多模态学习", key="targets")

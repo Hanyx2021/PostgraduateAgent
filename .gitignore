@@ -20,6 +20,7 @@ data/processed/*
 !data/processed/.gitkeep
 data/index/*
 !data/index/.gitkeep
+data/cache/
 *.pdf
 *.docx
 *.xlsx

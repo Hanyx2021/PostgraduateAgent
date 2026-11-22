@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+
 from advisor_match.pipeline import run_matching
 from advisor_match.retrieval.index import AdvisorIndex
 from advisor_match.schemas import Advisor, LedgerRecord, SourceRef, StudentProfile
@@ -57,10 +59,12 @@ class CountingLLM:
     def __init__(self) -> None:
         self.calls = 0
         self.prompts: set[str] = set()
+        self._lock = threading.Lock()
 
     def complete(self, *, system: str, user: str, temperature: float = 0.0) -> str:
-        self.calls += 1
-        self.prompts.add(user)
+        with self._lock:
+            self.calls += 1
+            self.prompts.add(user)
         return "不是 JSON"
 
 
