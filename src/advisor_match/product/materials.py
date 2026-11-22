@@ -57,6 +57,41 @@ def statements_from_text(
     return statements, warnings
 
 
+def extract_pdf_text(data: bytes, *, max_pages: int = 20) -> tuple[str, list[str]]:
+    """抽取 PDF 文本，按文本块合并行，避免把一句话拆成多条台账。
+
+    扫描版 PDF 没有文本层，这里不做 OCR，只如实提示。
+    """
+    try:
+        import fitz
+    except ImportError:
+        return "", ["未安装 PyMuPDF，无法解析 PDF"]
+
+    warnings: list[str] = []
+    try:
+        document = fitz.open(stream=data, filetype="pdf")
+    except Exception as error:  # noqa: BLE001 - 损坏文件不应让界面崩溃
+        return "", [f"PDF 打开失败：{type(error).__name__}"]
+
+    if document.needs_pass:
+        return "", ["PDF 有密码保护，无法解析"]
+
+    page_limit = min(document.page_count, max_pages)
+    chunks: list[str] = []
+    for index in range(page_limit):
+        for block in document[index].get_text("blocks"):
+            text = " ".join(str(block[4]).split())
+            if text:
+                chunks.append(text)
+
+    if document.page_count > max_pages:
+        warnings.append(f"仅解析前 {max_pages} 页")
+    if not chunks:
+        warnings.append("未提取到文字，可能是扫描版 PDF（未做 OCR）")
+    document.close()
+    return "\n".join(chunks), warnings
+
+
 def decode_material(raw: bytes) -> str:
     """优先 UTF-8，失败再按 GB18030（兼容中文 Windows 记事本）。"""
     for encoding in ("utf-8", "gb18030"):
@@ -67,4 +102,4 @@ def decode_material(raw: bytes) -> str:
     return raw.decode("utf-8", errors="ignore")
 
 
-__all__ = ["decode_material", "statements_from_text"]
+__all__ = ["decode_material", "extract_pdf_text", "statements_from_text"]

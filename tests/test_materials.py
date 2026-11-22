@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from advisor_match.product.materials import decode_material, statements_from_text
+import pytest
+
+from advisor_match.product.materials import (
+    decode_material,
+    extract_pdf_text,
+    statements_from_text,
+)
 
 
 def test_strips_bullets_and_numbers() -> None:
@@ -38,6 +44,34 @@ def test_caps_line_count() -> None:
     statements, warnings = statements_from_text(text, max_lines=50)
     assert len(statements) == 50
     assert any("只保留前 50 条" in warning for warning in warnings)
+
+
+def test_extract_pdf_text_and_statements() -> None:
+    fitz = pytest.importorskip("fitz")
+    document = fitz.open()
+    page = document.new_page()
+    page.insert_text((72, 72), "Completed a multimodal retrieval course project")
+    page.insert_text((72, 100), "Published a paper at ACL Findings 2025")
+    data = document.tobytes()
+    document.close()
+
+    text, warnings = extract_pdf_text(data)
+    assert "multimodal retrieval" in text
+    statements, _ = statements_from_text(text)
+    assert any("multimodal retrieval" in statement for statement in statements)
+    assert warnings == []
+
+
+def test_blank_pdf_warns_about_scan() -> None:
+    fitz = pytest.importorskip("fitz")
+    document = fitz.open()
+    document.new_page()
+    data = document.tobytes()
+    document.close()
+
+    text, warnings = extract_pdf_text(data)
+    assert text == ""
+    assert any("扫描版" in warning for warning in warnings)
 
 
 def test_decode_prefers_utf8_then_gb18030() -> None:

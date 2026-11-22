@@ -25,7 +25,11 @@ from advisor_match.email.draft import render_plain_text
 from advisor_match.email.validator import audit_refs, sentence_origin, validate_draft
 from advisor_match.ingest.advisors import load_advisors
 from advisor_match.pipeline import EmailResult, RecipientMismatch, run_email, run_matching
-from advisor_match.product.materials import decode_material, statements_from_text
+from advisor_match.product.materials import (
+    decode_material,
+    extract_pdf_text,
+    statements_from_text,
+)
 from advisor_match.retrieval.index import AdvisorIndex
 from advisor_match.retrieval.vector import load_embedding
 from advisor_match.schemas import (
@@ -137,15 +141,21 @@ with st.sidebar:
     interest_text = st.text_input("研究兴趣（可选，逗号分隔）", placeholder="大模型, 检索增强", key="interests")
 
     uploaded = st.file_uploader(
-        "上传材料（txt/md，按行生成台账）", type=["txt", "md"], key="materials_upload"
+        "上传材料（txt / md / pdf）", type=["txt", "md", "pdf"], key="materials_upload"
     )
     if uploaded is not None:
         token = f"{uploaded.name}:{uploaded.size}"
         if st.session_state.get("upload_token") != token:
-            parsed, warnings = statements_from_text(decode_material(uploaded.getvalue()))
+            raw = uploaded.getvalue()
+            extra_warnings: list[str] = []
+            if uploaded.name.lower().endswith(".pdf"):
+                text, extra_warnings = extract_pdf_text(raw)
+            else:
+                text = decode_material(raw)
+            parsed, warnings = statements_from_text(text)
             st.session_state["statements"] = "\n".join(parsed)
             st.session_state["upload_token"] = token
-            st.session_state["upload_warnings"] = warnings
+            st.session_state["upload_warnings"] = [*extra_warnings, *warnings]
             st.rerun()
     for warning in st.session_state.get("upload_warnings", []):
         st.caption(f"· {warning}")
