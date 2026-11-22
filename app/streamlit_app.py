@@ -26,6 +26,7 @@ from advisor_match.email.validator import audit_refs, sentence_origin, validate_
 from advisor_match.ingest.advisors import load_advisors
 from advisor_match.llm.client import get_client
 from advisor_match.pipeline import EmailResult, RecipientMismatch, run_email, run_matching
+from advisor_match.product.export import confirmation_json, match_result_json
 from advisor_match.product.materials import (
     decode_material,
     extract_pdf_text,
@@ -291,6 +292,14 @@ with tab_match:
                 for name, reason in result.excluded.items():
                     st.caption(f"{name}：{reason}")
 
+        st.download_button(
+            "下载匹配结果（JSON）",
+            data=match_result_json(result),
+            file_name="match_result.json",
+            mime="application/json",
+            key="download_match",
+        )
+
 with tab_email:
     if result is None:
         st.info("先完成匹配，再选择一位导师生成草稿。")
@@ -454,6 +463,22 @@ with tab_email:
                         value=render_plain_text(draft, ledger),
                         height=320,
                         disabled=True,
+                    )
+
+                st.download_button(
+                    "下载草稿（txt）",
+                    data=render_plain_text(draft, ledger),
+                    file_name=f"draft_{name}.txt",
+                    mime="text/plain",
+                    key=f"download_draft_{name}",
+                )
+                if saved is not None:
+                    st.download_button(
+                        "下载确认记录（JSON）",
+                        data=confirmation_json(saved),
+                        file_name=f"confirmation_{name}.json",
+                        mime="application/json",
+                        key=f"download_confirmation_{name}",
                     )
 
             with st.expander("最近确认记录（只记行为，不记正文）"):
