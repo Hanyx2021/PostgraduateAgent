@@ -53,6 +53,27 @@ def test_run_matching_respects_sensitive_field_guard() -> None:
     assert result is not None
 
 
+class CountingLLM:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.prompts: set[str] = set()
+
+    def complete(self, *, system: str, user: str, temperature: float = 0.0) -> str:
+        self.calls += 1
+        self.prompts.add(user)
+        return "不是 JSON"
+
+
+def test_llm_rerank_only_calls_top_candidates() -> None:
+    advisors = [make_advisor(f"甲{index}", ["信息检索"]) for index in range(5)]
+    index = AdvisorIndex.build(advisors)
+    llm = CountingLLM()
+
+    run_matching(make_profile(), index, keep_k=5, llm=llm, llm_rerank_top=2)
+    # 解析失败会重试，所以按"不同 prompt 数"判断调用了几个候选
+    assert len(llm.prompts) == 2
+
+
 def test_processing_is_reproducible() -> None:
     index = AdvisorIndex.build([make_advisor("甲", ["信息检索"]), make_advisor("乙", ["信息检索"])])
     first, _ = run_matching(make_profile(), index, keep_k=2)

@@ -103,16 +103,37 @@ def _llm_points(
     llm: LLMClient,
 ) -> list[MatchPoint]:
     """让模型给判断，但引文必须来自给定 sources；不合规的判断直接丢弃。"""
+    # 只给模型需要的信息：论文摘要既慢又贵，对方向判断帮助也有限。
+    advisor_payload = {
+        "name": advisor.name,
+        "research_tags": advisor.research_tags,
+        "research_summary": advisor.research_summary,
+        "admissions": [
+            {
+                "year": admission.year,
+                "direction": admission.direction,
+                "notes": admission.notes,
+            }
+            for admission in advisor.admissions
+        ],
+    }
+    ledger_payload = [
+        {"id": record.id, "kind": record.kind, "statement": record.statement, "status": record.status}
+        for record in ledger.values()
+    ]
     user = prompts.RERANK_USER.format(
-        ledger_json=json.dumps(
-            [record.model_dump() for record in ledger.values()], ensure_ascii=False
-        ),
-        advisor_json=advisor.model_dump_json(),
+        ledger_json=json.dumps(ledger_payload, ensure_ascii=False),
+        advisor_json=json.dumps(advisor_payload, ensure_ascii=False),
         sources_json=json.dumps(sources, ensure_ascii=False),
     )
-    try:
-        data = _extract_json(llm.complete(system=prompts.RERANK_SYSTEM, user=user))
-    except Exception:  # noqa: BLE001 - 模型不可用时退回规则版
+    data = None
+    for _ in range(2):
+        try:
+            data = _extract_json(llm.complete(system=prompts.RERANK_SYSTEM, user=user))
+            break
+        except Exception:  # noqa: BLE001 - 模型不可用时退回规则版
+            continue
+    if data is None:
         return []
 
     points: list[MatchPoint] = []

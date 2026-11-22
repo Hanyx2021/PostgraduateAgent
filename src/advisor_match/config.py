@@ -62,6 +62,8 @@ class Settings(BaseModel):
     )
     #: OpenAlex 免费 key，仅从本地 .env 读取，绝不入库。
     openalex_key: str | None = os.getenv("AM_OPENALEX_KEY")
+    #: 模型重排只对召回的前 N 位调用，控制时延与费用。
+    llm_rerank_top: int = int(os.getenv("AM_LLM_RERANK_TOP", "10"))
     llm_provider: str = os.getenv("AM_LLM_PROVIDER", "stub")
     llm_base_url: str | None = os.getenv("AM_LLM_BASE_URL")
     llm_model: str | None = os.getenv("AM_LLM_MODEL")

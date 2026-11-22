@@ -16,6 +16,7 @@ from pathlib import Path
 from advisor_match.email.draft import build_draft
 from advisor_match.email.validator import validate_draft
 from advisor_match.guards.recipient import RecipientIssue, check_recipient
+from advisor_match.config import settings
 from advisor_match.guards.sensitive import assert_no_sensitive_fields
 from advisor_match.ingest.advisors import load_advisors
 from advisor_match.llm.client import LLMClient
@@ -67,6 +68,7 @@ def run_matching(
     advisor_source_text: dict[str, dict[str, str]] | None = None,
     keep_k: int | None = None,
     llm: LLMClient | None = None,
+    llm_rerank_top: int | None = None,
 ) -> tuple[MatchResult, list[StageLog]]:
     """执行第 2–4 步。入口处强制检查画像不含敏感字段。
 
@@ -77,15 +79,16 @@ def run_matching(
     candidates = recall(profile, index)
     logs = [StageLog("recall", len(index.advisors), len(candidates))]
 
+    top = settings.llm_rerank_top if llm_rerank_top is None else llm_rerank_top
     matches: list[AdvisorMatch] = []
-    for advisor in candidates:
+    for position, advisor in enumerate(candidates):
         sources = advisor_source_text.get(advisor.name) if advisor_source_text else None
         match = rerank_one(
             profile,
             advisor,
             advisor_source_text=sources,
             embedding=index.embedding,
-            llm=llm,
+            llm=llm if position < top else None,
         )
         if match is not None:
             matches.append(match)

@@ -143,6 +143,11 @@ with st.sidebar:
     )
     if use_llm:
         st.caption(f"模型：{settings.llm_model or '未配置'}")
+    use_llm_rerank = st.checkbox(
+        f"使用模型重排（较慢，仅前 {settings.llm_rerank_top} 位）",
+        value=False,
+        key="use_llm_rerank",
+    )
 
     st.subheader("你的材料")
     target_text = st.text_input("目标方向（逗号分隔）", placeholder="信息检索, 多模态学习", key="targets")
@@ -200,7 +205,12 @@ if start:
             st.warning("未找到导师数据文件，当前使用两位虚构导师演示。")
 
         profile, ledger = build_profile(targets, interests, statements)
-        result, logs = run_matching(profile, index)
+        with st.spinner("匹配中…"):
+            result, logs = run_matching(
+                profile,
+                index,
+                llm=get_client() if use_llm_rerank else None,
+            )
 
         st.session_state.update(
             {
