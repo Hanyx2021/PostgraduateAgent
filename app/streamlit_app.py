@@ -24,6 +24,7 @@ from advisor_match.email.confirm import (
 from advisor_match.email.draft import render_plain_text
 from advisor_match.email.validator import audit_refs, sentence_origin, validate_draft
 from advisor_match.ingest.advisors import load_advisors
+from advisor_match.llm.client import get_client
 from advisor_match.pipeline import EmailResult, RecipientMismatch, run_email, run_matching
 from advisor_match.product.materials import (
     decode_material,
@@ -135,6 +136,13 @@ with st.sidebar:
     st.subheader("数据")
     data_path = st.text_input("导师主表路径", value=DEFAULT_DATA, key="data_path")
     use_vector = st.checkbox("使用向量召回（需要本地模型）", value=True, key="use_vector")
+    use_llm = st.checkbox(
+        "使用模型改写邮件（需要 API key）",
+        value=bool(settings.llm_api_key),
+        key="use_llm",
+    )
+    if use_llm:
+        st.caption(f"模型：{settings.llm_model or '未配置'}")
 
     st.subheader("你的材料")
     target_text = st.text_input("目标方向（逗号分隔）", placeholder="信息检索, 多模态学习", key="targets")
@@ -311,6 +319,7 @@ with tab_email:
                                 line.strip() for line in points_text.splitlines() if line.strip()
                             ],
                             student_signature=signature,
+                            llm=get_client() if use_llm else None,
                         )
                     except RecipientMismatch as error:
                         st.error(f"收件人核对未通过：{error}")

@@ -1,16 +1,24 @@
 """模型调用的最小接口。
 
-刻意保持 provider 无关：中期前先用 ``StubLLMClient`` 把流水线跑通，
-选定模型后再实现 ``HTTPLLMClient``。选型需要注意两点，写在这里免得后面忘：
-- 是否支持"不要把内容用于训练"的条款（隐私，幻灯片 4）；
-- 是否接受单次调用不带任何学生身份信息（脱敏后调用）。
+实现是 OpenAI 兼容的 ``/chat/completions``（当前接 DeepSeek），只用标准库，
+不引入额外 SDK。约定：
+- 不记录 prompt 内容与密钥；异常信息里也不带请求体；
+- 没有配置密钥时返回 ``StubLLMClient``，离线流程不受影响；
+- 调用方必须能承受客户端抛错（邮件生成会退回模板，重排会退回规则版）。
 """
 
 from __future__ import annotations
 
+import json
+import urllib.error
+import urllib.request
 from typing import Protocol
 
 from advisor_match.config import settings
+
+
+class LLMError(RuntimeError):
+    """模型调用失败。调用方应降级，而不是把异常抛给用户。"""
 
 
 class LLMClient(Protocol):
@@ -31,10 +39,70 @@ class StubLLMClient:
         return self.response
 
 
+class OpenAICompatibleClient:
+    """OpenAI 兼容接口。默认指向 DeepSeek。"""
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        model: str,
+        timeout: int = 90,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.model = model
+        self.timeout = timeout
+
+    def complete(self, *, system: str, user: str, temperature: float = 0.0) -> str:
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": temperature,
+        }
+        request = urllib.request.Request(
+            f"{self.base_url}/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                data = json.loads(response.read())
+        except urllib.error.HTTPError as error:
+            raise LLMError(f"模型接口返回 HTTP {error.code}") from error
+        except (urllib.error.URLError, TimeoutError, ValueError) as error:
+            raise LLMError(f"模型调用失败：{type(error).__name__}") from error
+
+        try:
+            content = data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as error:
+            raise LLMError("模型响应缺少 choices[0].message.content") from error
+        if not content or not str(content).strip():
+            raise LLMError("模型返回空内容")
+        return str(content)
+
+
 def get_client() -> LLMClient:
-    """按配置返回客户端。未配置时返回 stub，保证离线也能跑测试。"""
-    if settings.llm_provider == "stub":
-        return StubLLMClient()
-    raise NotImplementedError(
-        "尚未实现真实客户端。实现时请确认：脱敏后调用、不持久化 prompt、不在日志里写学生材料。"
-    )
+    """按配置返回客户端。未配置密钥时返回 stub，保证离线也能跑测试。"""
+    if (
+        settings.llm_provider != "stub"
+        and settings.llm_api_key
+        and settings.llm_base_url
+        and settings.llm_model
+    ):
+        return OpenAICompatibleClient(
+            base_url=settings.llm_base_url,
+            api_key=settings.llm_api_key,
+            model=settings.llm_model,
+        )
+    return StubLLMClient()
+
+
+__all__ = ["LLMClient", "LLMError", "OpenAICompatibleClient", "StubLLMClient", "get_client"]

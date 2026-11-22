@@ -7,6 +7,7 @@ import json
 import pytest
 
 from advisor_match.email.draft import build_draft
+from advisor_match.llm.client import LLMError
 from advisor_match.guards.recipient import check_recipient
 from advisor_match.pipeline import RecipientMismatch, run_email
 from tests.test_email_draft import make_contact, make_ledger, make_match
@@ -67,6 +68,14 @@ def test_llm_draft_is_used_when_valid() -> None:
                         {"text": "我发表过论文。", "kind": "fact", "ledger_refs": ["L-0001"]}
                     ],
                 },
+                {
+                    "role": "gap",
+                    "sentences": [{"text": "我还需要补充实验经验。", "kind": "intent", "ledger_refs": []}],
+                },
+                {
+                    "role": "closing",
+                    "sentences": [{"text": "期待您的回复。", "kind": "intent", "ledger_refs": []}],
+                },
             ],
         },
         ensure_ascii=False,
@@ -74,12 +83,39 @@ def test_llm_draft_is_used_when_valid() -> None:
     llm = FakeLLM(response)
     draft = build_draft(make_match(), make_contact(), make_ledger(), llm=llm)
     assert draft.subject == "模型生成的主题"
+    text = "".join(sentence.text for paragraph in draft.paragraphs for sentence in paragraph.sentences)
+    assert "（请在发送前填写" in text, "模型漏署名时应自动补上"
     assert llm.calls
+
+
+class RaisingLLM:
+    def complete(self, *, system: str, user: str, temperature: float = 0.0) -> str:
+        raise LLMError("down")
+
+
+def test_llm_failure_falls_back_to_template() -> None:
+    draft = build_draft(make_match(), make_contact(), make_ledger(), llm=RaisingLLM())
+    assert draft.subject.startswith("推免自荐")
 
 
 def test_invalid_llm_output_falls_back_to_template() -> None:
     llm = FakeLLM("这不是 JSON")
     draft = build_draft(make_match(), make_contact(), make_ledger(), llm=llm)
+    assert draft.subject.startswith("推免自荐")
+
+
+def test_llm_missing_paragraph_falls_back_to_template() -> None:
+    response = json.dumps(
+        {
+            "subject": "只有两段",
+            "paragraphs": [
+                {"role": "greeting", "sentences": [{"text": "李老师您好！", "kind": "greeting", "ledger_refs": []}]},
+                {"role": "fit", "sentences": [{"text": "我发表过论文。", "kind": "fact", "ledger_refs": ["L-0001"]}]},
+            ],
+        },
+        ensure_ascii=False,
+    )
+    draft = build_draft(make_match(), make_contact(), make_ledger(), llm=FakeLLM(response))
     assert draft.subject.startswith("推免自荐")
 
 
@@ -97,6 +133,14 @@ def test_llm_fabricated_refs_are_dropped() -> None:
                     "sentences": [
                         {"text": "我在 Nature 发表过三篇论文。", "kind": "fact", "ledger_refs": ["L-9999"]}
                     ],
+                },
+                {
+                    "role": "gap",
+                    "sentences": [{"text": "我还需要补充实验经验。", "kind": "intent", "ledger_refs": []}],
+                },
+                {
+                    "role": "closing",
+                    "sentences": [{"text": "期待您的回复。", "kind": "intent", "ledger_refs": []}],
                 },
             ],
         },

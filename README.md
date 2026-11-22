@@ -22,6 +22,7 @@ python -m venv .venv
 .venv/Scripts/activate        # Windows；macOS/Linux 用 source .venv/bin/activate
 pip install -e ".[dev]"
 
+# 可选：在 .env 配置 AM_LLM_* 后，界面可勾选“使用模型改写邮件”
 pytest                        # 运行测试
 streamlit run app/streamlit_app.py
 

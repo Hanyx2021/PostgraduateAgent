@@ -145,6 +145,14 @@ def _extract_json(raw: str) -> dict:
     return json.loads(raw[start : end + 1])
 
 
+def _signature_sentence(closing: EmailParagraph, signature: str) -> EmailSentence:
+    """模型常漏署名；已经有"此致/敬礼"时只补姓名，避免重复寒暄。"""
+    closing_text = "".join(sentence.text for sentence in closing.sentences)
+    if any(marker in closing_text for marker in ("此致", "敬礼", "祝好", "顺颂")):
+        return EmailSentence(text=f"\n{signature}", kind="greeting")
+    return EmailSentence(text=f"祝好！\n{signature}", kind="greeting")
+
+
 def _llm_draft(
     match: AdvisorMatch,
     contact: AdvisorContact,
@@ -161,22 +169,39 @@ def _llm_draft(
         ),
         match_json=match.model_dump_json(),
     )
-    try:
-        data = _extract_json(llm.complete(system=prompts.EMAIL_SYSTEM, user=user))
-        paragraphs = [
-            EmailParagraph(
-                role=paragraph["role"],
-                sentences=[EmailSentence(**sentence) for sentence in paragraph["sentences"]],
+    # 模型偶尔会漏段或输出非 JSON；重试一次，仍失败才退回模板。
+    for _ in range(2):
+        try:
+            data = _extract_json(llm.complete(system=prompts.EMAIL_SYSTEM, user=user))
+            paragraphs = [
+                EmailParagraph(
+                    role=paragraph["role"],
+                    sentences=[EmailSentence(**sentence) for sentence in paragraph["sentences"]],
+                )
+                for paragraph in data["paragraphs"]
+            ]
+            if {paragraph.role for paragraph in paragraphs} != {
+                "greeting",
+                "fit",
+                "gap",
+                "closing",
+            }:
+                continue
+            if signature not in "".join(
+                sentence.text for paragraph in paragraphs for sentence in paragraph.sentences
+            ):
+                closing = next(
+                    paragraph for paragraph in paragraphs if paragraph.role == "closing"
+                )
+                closing.sentences.append(_signature_sentence(closing, signature))
+            return EmailDraft(
+                recipient=contact,
+                subject=str(data["subject"]),
+                paragraphs=paragraphs,
             )
-            for paragraph in data["paragraphs"]
-        ]
-        return EmailDraft(
-            recipient=contact,
-            subject=str(data["subject"]),
-            paragraphs=paragraphs,
-        )
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-        return None
+        except Exception:  # noqa: BLE001 - 模型不可用/输出异常都进入重试
+            continue
+    return None
 
 
 def build_draft(

@@ -69,7 +69,9 @@ def run_matching_flow(
     app: AppTest, target: str = "信息检索", statement: str = "完成信息检索方向的课程项目"
 ) -> AppTest:
     # 测试里关掉向量模型，避免加载 95MB 模型
-    app.checkbox(key="use_vector").uncheck().run()
+    app.checkbox(key="use_vector").uncheck()
+    app.checkbox(key="use_llm").uncheck()
+    app.run()
     app.text_input(key="targets").set_value(target)
     app.text_area(key="statements").set_value(statement)
     app.button(key="run_matching").click().run()
@@ -208,7 +210,9 @@ def test_ui_has_no_send_button(advisors_file: Path) -> None:
 def test_missing_data_falls_back_to_demo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AM_ADVISORS_PATH", str(tmp_path / "missing.jsonl"))
     app = AppTest.from_file(str(APP), default_timeout=30).run()
-    app.checkbox(key="use_vector").uncheck().run()
+    app.checkbox(key="use_vector").uncheck()
+    app.checkbox(key="use_llm").uncheck()
+    app.run()
     app.text_input(key="targets").set_value("信息检索")
     app.text_area(key="statements").set_value("完成信息检索方向的课程项目")
     app.button(key="run_matching").click().run()
