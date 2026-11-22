@@ -5,8 +5,10 @@ from __future__ import annotations
 from advisor_match.evaluation import (
     build_catalog_profiles,
     evaluate,
+    evaluate_final_rankings,
     ndcg_at_k,
     recall_at_k,
+    select_subset,
 )
 from advisor_match.retrieval.index import AdvisorIndex
 from advisor_match.schemas import AdmissionEntry, Advisor, SourceRef
@@ -89,6 +91,25 @@ def test_report_has_program_breakdown_and_weight_grid() -> None:
     assert "081200" in report.by_program
     assert len(report.grid) == 5
     assert {row["bm25_weight"] for row in report.grid} == {0.0, 0.3, 0.5, 0.7, 1.0}
+
+
+class FastLLM:
+    def complete(self, *, system: str, user: str, temperature: float = 0.0) -> str:
+        return "不是 JSON"
+
+
+def test_final_ranking_comparison_falls_back_to_rule() -> None:
+    advisors = [make_advisor("甲", ["信息检索"], "信息检索")]
+    index = AdvisorIndex.build(advisors)
+    profiles = build_catalog_profiles(advisors, n=10, min_relevant=1)
+    subset = select_subset(profiles, 1)
+
+    comparison = evaluate_final_rankings(
+        subset, index, llm=FastLLM(), k=1, llm_rerank_top=1
+    )
+    assert comparison["profiles"] == 1
+    assert comparison["rule"] == comparison["llm"]
+    assert comparison["per_profile"][0]["label"].endswith("信息检索")
 
 
 def test_report_contains_per_profile_details() -> None:

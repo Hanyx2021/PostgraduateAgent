@@ -25,9 +25,11 @@ from pathlib import Path
 
 from advisor_match.config import settings
 from advisor_match.ingest.advisors import load_advisors
+from advisor_match.llm.client import get_client
 from advisor_match.retrieval.index import AdvisorIndex
 from advisor_match.retrieval.recall import recall
 from advisor_match.retrieval.vector import load_embedding
+from advisor_match.pipeline import run_matching
 from advisor_match.schemas import Advisor, LedgerRecord, SourceRef, StudentProfile
 
 
@@ -245,6 +247,89 @@ def evaluate(
     return report
 
 
+def _final_order(result) -> list[str]:
+    """三档按 core → adjacent → needs_support 展开成最终推荐顺序。"""
+    return [
+        match.advisor.name
+        for tier in ("core", "adjacent", "needs_support")
+        for match in getattr(result, tier)
+    ]
+
+
+def select_subset(profiles: list[EvalProfile], n: int) -> list[EvalProfile]:
+    """按专业轮询抽样，避免对比只覆盖某一个专业。"""
+    groups: dict[str, list[EvalProfile]] = defaultdict(list)
+    for profile in profiles:
+        groups[profile.label.split("/")[0]].append(profile)
+    lists = [groups[key] for key in sorted(groups)]
+    selected: list[EvalProfile] = []
+    index = 0
+    while len(selected) < min(n, len(profiles)):
+        added = False
+        for items in lists:
+            if index < len(items) and len(selected) < n:
+                selected.append(items[index])
+                added = True
+        if not added:
+            break
+        index += 1
+    return selected
+
+
+def evaluate_final_rankings(
+    profiles: list[EvalProfile],
+    index: AdvisorIndex,
+    *,
+    llm,
+    k: int = 10,
+    llm_rerank_top: int = 8,
+) -> dict:
+    """规则版 vs 模型版：比较最终推荐列表的 Recall@k / nDCG@k。"""
+    rows: list[dict] = []
+    rule_scores: list[tuple[float, float]] = []
+    llm_scores: list[tuple[float, float]] = []
+
+    for profile in profiles:
+        rule_result, _ = run_matching(profile.profile, index, llm=None)
+        llm_result, _ = run_matching(
+            profile.profile,
+            index,
+            llm=llm,
+            llm_rerank_top=llm_rerank_top,
+        )
+        rule_rank = _final_order(rule_result)
+        llm_rank = _final_order(llm_result)
+        row = {
+            "label": profile.label,
+            "ground_truth": len(profile.ground_truth),
+            "rule_recall": recall_at_k(rule_rank, profile.ground_truth, k),
+            "rule_ndcg": ndcg_at_k(rule_rank, profile.ground_truth, k),
+            "llm_recall": recall_at_k(llm_rank, profile.ground_truth, k),
+            "llm_ndcg": ndcg_at_k(llm_rank, profile.ground_truth, k),
+        }
+        rows.append(row)
+        rule_scores.append((row["rule_recall"], row["rule_ndcg"]))
+        llm_scores.append((row["llm_recall"], row["llm_ndcg"]))
+
+    def average(scores: list[tuple[float, float]]) -> tuple[float, float]:
+        if not scores:
+            return 0.0, 0.0
+        return (
+            sum(item[0] for item in scores) / len(scores),
+            sum(item[1] for item in scores) / len(scores),
+        )
+
+    rule_recall, rule_ndcg = average(rule_scores)
+    llm_recall, llm_ndcg = average(llm_scores)
+    return {
+        "profiles": len(profiles),
+        "rule": {"recall": rule_recall, "ndcg": rule_ndcg},
+        "llm": {"recall": llm_recall, "ndcg": llm_ndcg},
+        "per_profile": rows,
+        "notes": "最终推荐列表（三档展开），真值仍为 2027 目录方向",
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="运行合成画像评估")
     parser.add_argument(
@@ -254,6 +339,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--k", type=int, default=10)
     parser.add_argument("--n", type=int, default=30, help="画像数量")
     parser.add_argument("--no-vector", action="store_true", help="只评估 BM25")
+    parser.add_argument("--rerank-compare", action="store_true", help="规则版 vs 模型版重排对比")
+    parser.add_argument("--subset", type=int, default=8, help="对比用的画像数量")
+    parser.add_argument("--llm-rerank-top", type=int, default=8)
     args = parser.parse_args(argv)
 
     advisors = load_advisors(args.advisors)
@@ -272,6 +360,21 @@ def main(argv: list[str] | None = None) -> int:
         "notes": report.notes,
         "per_profile": report.per_profile,
     }
+
+    comparison = None
+    if args.rerank_compare:
+        if not settings.llm_api_key:
+            print("rerank comparison skipped: 缺少 AM_LLM_API_KEY")
+        else:
+            subset = select_subset(profiles, args.subset)
+            comparison = evaluate_final_rankings(
+                subset,
+                index,
+                llm=get_client(),
+                k=args.k,
+                llm_rerank_top=args.llm_rerank_top,
+            )
+            payload["rerank_comparison"] = comparison
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
 
@@ -294,6 +397,17 @@ def main(argv: list[str] | None = None) -> int:
                 f"  {row['bm25_weight']:.1f}/{row['vector_weight']:.1f}: "
                 f"R={row['recall']:.3f}  N={row['ndcg']:.3f}"
             )
+
+    if comparison is not None:
+        print(f"\nrerank comparison (n={comparison['profiles']}):")
+        print(
+            f"  rule: R={comparison['rule']['recall']:.3f}  "
+            f"N={comparison['rule']['ndcg']:.3f}"
+        )
+        print(
+            f"  llm:  R={comparison['llm']['recall']:.3f}  "
+            f"N={comparison['llm']['ndcg']:.3f}"
+        )
 
     worst = sorted(report.per_profile, key=lambda row: row["pipeline_ndcg"])[:5]
     print("\nworst 5 profiles:")

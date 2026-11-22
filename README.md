@@ -44,6 +44,8 @@ python -m advisor_match.pipeline --target "信息检索,多模态学习" \
 
 # 跑评估：30 个合成画像，输出 Recall@10 / nDCG@10
 python -m advisor_match.evaluation --advisors data/processed/advisors.jsonl
+# 规则版 vs 模型版重排对比（需要 AM_LLM_API_KEY）
+python -m advisor_match.evaluation --advisors data/processed/advisors.jsonl   --rerank-compare --subset 10
 ```
 
 ## 五步流水线
