@@ -147,6 +147,29 @@ def test_sentence_editing_and_deletion(advisors_file: Path) -> None:
     assert record["student_edit_ratio"] > 0
 
 
+def test_switching_advisors_keeps_each_draft(advisors_file: Path) -> None:
+    app = run_matching_flow(
+        AppTest.from_file(str(APP), default_timeout=30).run(),
+        target="信息检索,数据库",
+        statement="完成信息检索与数据库方向的课程项目",
+    )
+    app.selectbox(key="advisor_select").set_value("李老师").run()
+    app.button(key="generate_draft").click().run()
+    assert any("推免自荐｜李老师" in item.value for item in app.markdown)
+
+    # 切到王老师：还没有草稿，不应显示李老师的草稿
+    app.selectbox(key="advisor_select").set_value("王老师").run()
+    editors = [item for item in app.text_area if item.key and item.key.startswith("edit-")]
+    assert editors == []
+    app.button(key="generate_draft").click().run()
+    assert any("推免自荐｜王老师" in item.value for item in app.markdown)
+
+    # 切回李老师：草稿还在
+    app.selectbox(key="advisor_select").set_value("李老师").run()
+    assert any("推免自荐｜李老师" in item.value for item in app.markdown)
+    assert [item for item in app.text_area if item.key and item.key.startswith("edit-")]
+
+
 def test_missing_email_blocks_draft(advisors_file: Path) -> None:
     app = run_matching_flow(AppTest.from_file(str(APP), default_timeout=30).run())
     app.selectbox(key="advisor_select").set_value("赵老师").run()

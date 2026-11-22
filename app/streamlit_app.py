@@ -179,8 +179,9 @@ if start:
                 "data_source": "真实数据" if path.exists() else "演示数据",
             }
         )
-        st.session_state.pop("draft", None)
-        st.session_state["confirmed"] = {}
+        st.session_state["drafts"] = {}
+        for stale in ("draft", "contact", "confirmed", "revision", "edited_total", "confirmation"):
+            st.session_state.pop(stale, None)
 
 result = st.session_state.get("result")
 ledger = st.session_state.get("ledger") or {}
@@ -252,9 +253,14 @@ with tab_email:
         if not names:
             st.warning("当前没有可写的导师。")
         else:
+            drafts: dict[str, dict] = st.session_state.setdefault("drafts", {})
+            if drafts:
+                st.caption("已保存草稿：" + "、".join(drafts))
+
             name = st.selectbox("选择导师", names, key="advisor_select")
             match = selected[names.index(name)]
             advisor = match.advisor
+            entry = drafts.get(name)
 
             signature = st.text_input(
                 "署名（只用于生成草稿，不保存）", placeholder="张三　计算机系 2023 级", key="signature"
@@ -282,15 +288,18 @@ with tab_email:
                     except RecipientMismatch as error:
                         st.error(f"收件人核对未通过：{error}")
                     else:
-                        st.session_state["draft"] = email_result
-                        st.session_state["contact"] = contact
-                        st.session_state["confirmed"] = {}
-                        st.session_state["revision"] = 0
-                        st.session_state["edited_total"] = 0
-                        st.session_state.pop("confirmation", None)
+                        entry = {
+                            "result": email_result,
+                            "contact": contact,
+                            "revision": 0,
+                            "edited_total": 0,
+                            "confirmed": {},
+                            "confirmation": None,
+                        }
+                        drafts[name] = entry
 
-            email_result = st.session_state.get("draft")
-            if email_result is not None:
+            if entry is not None:
+                email_result = entry["result"]
                 draft = email_result.draft
                 st.markdown(f"**主题：** {draft.subject}")
                 st.caption(
@@ -298,14 +307,12 @@ with tab_email:
                     f"丢弃无据陈述 {len(email_result.report.dropped)} 句"
                 )
 
-                revision = st.session_state.setdefault("revision", 0)
-                edited_total = st.session_state.setdefault("edited_total", 0)
-                confirmed: dict[str, bool] = st.session_state.setdefault("confirmed", {})
-
+                revision = entry["revision"]
+                confirmed: dict[str, bool] = entry["confirmed"]
                 for paragraph in draft.paragraphs:
                     st.markdown(f"**{paragraph.role}**")
                     for index, sentence in enumerate(paragraph.sentences):
-                        sid = f"{revision}-{paragraph.role}-{index}"
+                        sid = f"{name}-{revision}-{paragraph.role}-{index}"
                         col_text, col_ops = st.columns([5, 1])
                         with col_text:
                             st.text_area(
@@ -335,7 +342,7 @@ with tab_email:
                     for paragraph in draft.paragraphs:
                         kept = []
                         for index, sentence in enumerate(paragraph.sentences):
-                            sid = f"{revision}-{paragraph.role}-{index}"
+                            sid = f"{name}-{revision}-{paragraph.role}-{index}"
                             text = str(st.session_state.get(f"edit-{sid}", sentence.text)).strip()
                             if st.session_state.get(f"del-{sid}") or not text:
                                 continue
@@ -350,11 +357,11 @@ with tab_email:
                     else:
                         updated = draft.model_copy(update={"paragraphs": new_paragraphs})
                         updated, report = validate_draft(updated, ledger)
-                        st.session_state["draft"] = EmailResult(draft=updated, report=report)
-                        st.session_state["edited_total"] = edited_total + edited
-                        st.session_state["revision"] = revision + 1
-                        st.session_state["confirmed"] = {}
-                        st.session_state.pop("confirmation", None)
+                        entry["result"] = EmailResult(draft=updated, report=report)
+                        entry["edited_total"] += edited
+                        entry["revision"] += 1
+                        entry["confirmed"] = {}
+                        entry["confirmation"] = None
                         st.rerun()
 
                 st.divider()
@@ -363,15 +370,15 @@ with tab_email:
                     mark_confirmed(draft, all_sentences_confirmed=True)
                     record = build_record(
                         draft,
-                        st.session_state["contact"],
+                        entry["contact"],
                         refs_used=audit_refs(draft, ledger),
-                        edited=st.session_state.get("edited_total", 0),
+                        edited=entry["edited_total"],
                     )
                     save_confirmation(record, CONFIRMATION_LOG)
-                    st.session_state["confirmation"] = record
+                    entry["confirmation"] = record
 
-                saved = st.session_state.get("confirmation")
-                if saved is not None and saved.advisor_name == draft.recipient.display_name:
+                saved = entry.get("confirmation")
+                if saved is not None:
                     st.success(
                         f"已留痕：{saved.advisor_name}，{saved.sentence_count} 句，"
                         f"{len(saved.refs_used)} 条台账依据（只记行为，不记正文）"
