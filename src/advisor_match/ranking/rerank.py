@@ -121,10 +121,15 @@ def _llm_points(
         {"id": record.id, "kind": record.kind, "statement": record.statement, "status": record.status}
         for record in ledger.values()
     ]
+    # 把合并后的原文拆成条目列表，让模型只能挑单条，不能拼出一句宽泛的"相关"。
+    source_items = {
+        doc_id: [item.strip() for item in re.split(r"[，,、;；]", text) if item.strip()]
+        for doc_id, text in sources.items()
+    }
     user = prompts.RERANK_USER.format(
         ledger_json=json.dumps(ledger_payload, ensure_ascii=False),
         advisor_json=json.dumps(advisor_payload, ensure_ascii=False),
-        sources_json=json.dumps(sources, ensure_ascii=False),
+        sources_json=json.dumps(source_items, ensure_ascii=False),
     )
     data = None
     for _ in range(2):
@@ -137,10 +142,10 @@ def _llm_points(
         return []
 
     points: list[MatchPoint] = []
-    for item in data.get("match_points", [])[:3]:
+    for item in data.get("match_points", [])[:2]:
         if not isinstance(item, dict):
             continue
-        refs = [ref for ref in item.get("student_ledger_refs", []) if ref in ledger]
+        refs = [ref for ref in item.get("student_ledger_refs", []) if ref in ledger][:1]
         statement = str(item.get("statement", "")).strip()
         doc_id = str(item.get("source_doc_id", ""))
         quote = str(item.get("advisor_quote", "")).strip()
@@ -149,7 +154,8 @@ def _llm_points(
             dimension = "direction"
         if not refs or not statement or doc_id not in sources or not quote:
             continue
-        if not quote_is_grounded(quote, sources[doc_id]):
+        allowed = source_items.get(doc_id, [])
+        if not allowed or not any(quote_is_grounded(quote, candidate) for candidate in allowed):
             continue
         points.append(
             MatchPoint(

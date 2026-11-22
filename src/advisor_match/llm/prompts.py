@@ -52,7 +52,7 @@ RERANK_USER = """\
 导师信息：
 {advisor_json}
 
-可引用的导师原文（键为 source_doc_id，值为原文）：
+可引用的导师原文（键为 source_doc_id，值为可选条目列表，只能选其中一条）：
 {sources_json}
 
 输出 JSON：{{"match_points": [{{"dimension": "direction|method|experience|resource", "statement": "...", "student_ledger_refs": ["L-0001"], "source_doc_id": "...", "advisor_quote": "..."}}]}}

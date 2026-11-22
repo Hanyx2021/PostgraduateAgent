@@ -174,6 +174,16 @@ def test_llm_points_are_used_when_quote_is_grounded() -> None:
     assert match.match_points[0].advisor_refs[0].quote == "信息检索"
 
 
+def test_llm_must_pick_single_source_item() -> None:
+    advisor = make_advisor(["信息检索", "多模态学习"])
+    profile = make_profile(["信息检索"], "做过信息检索课程项目")
+    joined = llm_response(quote="信息检索，多模态学习")
+    match = rerank_one(profile, advisor, llm=FakeLLM(joined))
+    assert match is not None
+    # 拼接的引文不算"单个条目"，模型判断被丢弃，退回规则版
+    assert all("模型给出的判断" not in point.statement for point in match.match_points)
+
+
 def test_llm_fabricated_quote_falls_back_to_rule_points() -> None:
     profile = make_profile(["信息检索"], "做过信息检索课程项目")
     match = rerank_one(
