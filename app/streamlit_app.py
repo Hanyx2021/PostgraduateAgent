@@ -25,6 +25,7 @@ from advisor_match.email.draft import render_plain_text
 from advisor_match.email.validator import audit_refs, sentence_origin, validate_draft
 from advisor_match.ingest.advisors import load_advisors
 from advisor_match.pipeline import EmailResult, RecipientMismatch, run_email, run_matching
+from advisor_match.product.materials import decode_material, statements_from_text
 from advisor_match.retrieval.index import AdvisorIndex
 from advisor_match.retrieval.vector import load_embedding
 from advisor_match.schemas import (
@@ -134,6 +135,22 @@ with st.sidebar:
     st.subheader("你的材料")
     target_text = st.text_input("目标方向（逗号分隔）", placeholder="信息检索, 多模态学习", key="targets")
     interest_text = st.text_input("研究兴趣（可选，逗号分隔）", placeholder="大模型, 检索增强", key="interests")
+
+    uploaded = st.file_uploader(
+        "上传材料（txt/md，按行生成台账）", type=["txt", "md"], key="materials_upload"
+    )
+    if uploaded is not None:
+        token = f"{uploaded.name}:{uploaded.size}"
+        if st.session_state.get("upload_token") != token:
+            parsed, warnings = statements_from_text(decode_material(uploaded.getvalue()))
+            st.session_state["statements"] = "\n".join(parsed)
+            st.session_state["upload_token"] = token
+            st.session_state["upload_warnings"] = warnings
+            st.rerun()
+    for warning in st.session_state.get("upload_warnings", []):
+        st.caption(f"· {warning}")
+    st.caption("材料只在本地解析，不上传、不保存。")
+
     statement_text = st.text_area(
         "成果陈述（每行一条，会成为台账记录）",
         placeholder="完成多模态检索增强生成的课程项目\n以二作身份发表 ACL Findings 2025 论文",
@@ -299,6 +316,9 @@ with tab_email:
                         drafts[name] = entry
 
             if entry is not None:
+                if st.button("清除该导师草稿", key="clear_draft"):
+                    drafts.pop(name, None)
+                    st.rerun()
                 email_result = entry["result"]
                 draft = email_result.draft
                 st.markdown(f"**主题：** {draft.subject}")

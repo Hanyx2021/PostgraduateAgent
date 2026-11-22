@@ -170,6 +170,17 @@ def test_switching_advisors_keeps_each_draft(advisors_file: Path) -> None:
     assert [item for item in app.text_area if item.key and item.key.startswith("edit-")]
 
 
+def test_clear_draft_removes_only_that_advisor(advisors_file: Path) -> None:
+    app = run_matching_flow(AppTest.from_file(str(APP), default_timeout=30).run())
+    app.selectbox(key="advisor_select").set_value("李老师").run()
+    app.button(key="generate_draft").click().run()
+    assert [item for item in app.text_area if item.key and item.key.startswith("edit-")]
+
+    app.button(key="clear_draft").click().run()
+    assert not [item for item in app.text_area if item.key and item.key.startswith("edit-")]
+    assert not any("已保存草稿" in caption.value for caption in app.caption)
+
+
 def test_missing_email_blocks_draft(advisors_file: Path) -> None:
     app = run_matching_flow(AppTest.from_file(str(APP), default_timeout=30).run())
     app.selectbox(key="advisor_select").set_value("赵老师").run()
