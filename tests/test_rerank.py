@@ -174,6 +174,21 @@ def test_llm_points_are_used_when_quote_is_grounded() -> None:
     assert match.match_points[0].advisor_refs[0].quote == "信息检索"
 
 
+def test_hybrid_keeps_rule_points_and_adds_llm_point() -> None:
+    advisor = make_advisor(["信息检索", "多模态学习"])
+    profile = make_profile(["信息检索"], "做过信息检索课程项目")
+    response = llm_response(quote="多模态学习", statement="模型补充的判断")
+
+    llm_only = rerank_one(profile, advisor, llm=FakeLLM(response), rerank_mode="llm")
+    hybrid = rerank_one(profile, advisor, llm=FakeLLM(response), rerank_mode="hybrid")
+
+    assert llm_only is not None and hybrid is not None
+    assert len(llm_only.match_points) == 1
+    assert len(hybrid.match_points) == 2
+    quotes = {point.advisor_refs[0].quote for point in hybrid.match_points}
+    assert quotes == {"信息检索", "多模态学习"}
+
+
 def test_llm_must_pick_single_source_item() -> None:
     advisor = make_advisor(["信息检索", "多模态学习"])
     profile = make_profile(["信息检索"], "做过信息检索课程项目")

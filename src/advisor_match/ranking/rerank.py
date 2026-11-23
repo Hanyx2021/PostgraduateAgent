@@ -160,12 +160,28 @@ def _llm_points(
         points.append(
             MatchPoint(
                 dimension=dimension,
+                channel="llm",
                 statement=statement[:300],
                 student_ledger_refs=refs,
                 advisor_refs=[SourceRef(doc_id=doc_id, locator="模型判断", quote=quote[:800])],
             )
         )
     return points
+
+
+def _merge_points(
+    rule_points: list[MatchPoint], llm_points: list[MatchPoint]
+) -> list[MatchPoint]:
+    """规则证据全部保留，模型只补充引文不同的判断。"""
+    merged = list(rule_points)
+    seen = {point.advisor_refs[0].quote for point in rule_points}
+    for point in llm_points:
+        quote = point.advisor_refs[0].quote
+        if quote in seen:
+            continue
+        merged.append(point)
+        seen.add(quote)
+    return merged[:3]
 
 
 def rerank_one(
@@ -175,11 +191,14 @@ def rerank_one(
     advisor_source_text: dict[str, str] | None = None,
     embedding: EmbeddingProvider | None = None,
     llm: LLMClient | None = None,
+    rerank_mode: str = "llm",
 ) -> AdvisorMatch | None:
     """对一位导师产出匹配结果；证据不足时返回 None（宁可少给，不可编造）。
 
-    证据有两路：详情页的「研究领域」和 2027 招生目录的方向。目录方向是官方公开
-    信息，能补上研究标签缺失的导师，也不依赖课题组主页是否维护。
+    ``rerank_mode``：
+    - ``rule``：只用可复现的规则判断；
+    - ``llm``：模型判断替换规则判断，失败时退回规则版；
+    - ``hybrid``：规则判断全部保留，模型只补充引文不同的判断。
     """
     sources = (
         dict(advisor_source_text)
@@ -216,90 +235,97 @@ def rerank_one(
             statement_vectors = embedding.encode([record.statement for record in ledger.values()])
             record_vectors = dict(zip(ledger.keys(), statement_vectors))
 
-    points: list[MatchPoint] = []
-    if llm is not None:
-        points = _llm_points(profile, advisor, ledger, sources, llm)
-    if not points:
-        matched_tags: list[str] = []
-        matched_tag_vectors: list[np.ndarray | None] = []
-        for position, tag in enumerate(advisor.research_tags):
-            lexical = _overlap(tag, student_text)
-            tag_vector = tag_vectors[position] if tag_vectors is not None else None
-            semantic = _cosine(tag_vector, student_vector)
-            if lexical < 1 and semantic < threshold:
-                continue
+    # ---- 规则证据：始终计算，供 rule / hybrid 使用 ----
+    rule_points: list[MatchPoint] = []
+    matched_tags: list[str] = []
+    matched_tag_vectors: list[np.ndarray | None] = []
+    for position, tag in enumerate(advisor.research_tags):
+        lexical = _overlap(tag, student_text)
+        tag_vector = tag_vectors[position] if tag_vectors is not None else None
+        semantic = _cosine(tag_vector, student_vector)
+        if lexical < 1 and semantic < threshold:
+            continue
 
-            record, used_semantic = _supporting_record(
-                tag, ledger, tag_vector=tag_vector, record_vectors=record_vectors
-            )
-            if record is None:
-                continue
+        record, used_semantic = _supporting_record(
+            tag, ledger, tag_vector=tag_vector, record_vectors=record_vectors
+        )
+        if record is None:
+            continue
 
-            relation = "在语义上相近" if used_semantic else "相关"
-            statement = (
-                f"你的成果「{record.statement[:40]}」与{_teacher_name(advisor.name)}的研究方向"
-                f"「{tag}」{relation}"
+        relation = "在语义上相近" if used_semantic else "相关"
+        statement = (
+            f"你的成果「{record.statement[:40]}」与{_teacher_name(advisor.name)}的研究方向"
+            f"「{tag}」{relation}"
+        )
+        rule_points.append(
+            MatchPoint(
+                dimension="direction",
+                statement=statement[:300],
+                student_ledger_refs=[record.id],
+                advisor_refs=[SourceRef(doc_id=doc_id, locator="研究领域", quote=tag)],
             )
-            points.append(
-                MatchPoint(
-                    dimension="direction",
-                    statement=statement[:300],
-                    student_ledger_refs=[record.id],
-                    advisor_refs=[SourceRef(doc_id=doc_id, locator="研究领域", quote=tag)],
-                )
-            )
-            matched_tags.append(tag)
-            matched_tag_vectors.append(tag_vector)
-            if len(points) >= 3:
-                break
+        )
+        matched_tags.append(tag)
+        matched_tag_vectors.append(tag_vector)
+        if len(rule_points) >= 3:
+            break
 
-        # 招生目录方向：与研究标签去重后作为独立证据，引文指向目录页。
-        for position, admission in enumerate(advisor.admissions):
-            lexical = _overlap(admission.direction, student_text)
-            admission_vector = (
-                admission_vectors[position] if admission_vectors is not None else None
-            )
-            semantic = _cosine(admission_vector, student_vector)
-            if lexical < 1 and semantic < threshold:
-                continue
-            if any(
-                _overlap(admission.direction, tag) >= 1
-                or _cosine(admission_vector, vector) >= threshold
-                for tag, vector in zip(matched_tags, matched_tag_vectors)
-            ):
-                continue
+    for position, admission in enumerate(advisor.admissions):
+        lexical = _overlap(admission.direction, student_text)
+        admission_vector = (
+            admission_vectors[position] if admission_vectors is not None else None
+        )
+        semantic = _cosine(admission_vector, student_vector)
+        if lexical < 1 and semantic < threshold:
+            continue
+        if any(
+            _overlap(admission.direction, tag) >= 1
+            or _cosine(admission_vector, vector) >= threshold
+            for tag, vector in zip(matched_tags, matched_tag_vectors)
+        ):
+            continue
 
-            record, used_semantic = _supporting_record(
-                admission.direction,
-                ledger,
-                tag_vector=admission_vector,
-                record_vectors=record_vectors,
-            )
-            if record is None:
-                continue
+        record, used_semantic = _supporting_record(
+            admission.direction,
+            ledger,
+            tag_vector=admission_vector,
+            record_vectors=record_vectors,
+        )
+        if record is None:
+            continue
 
-            relation = "在语义上相近" if used_semantic else "相关"
-            note = "（该方向仅推免）" if admission.only_recommendation else ""
-            statement = (
-                f"你的成果「{record.statement[:40]}」与{_teacher_name(advisor.name)}在 "
-                f"{admission.year} 年招生目录中的「{admission.direction}」方向{relation}{note}"
+        relation = "在语义上相近" if used_semantic else "相关"
+        note = "（该方向仅推免）" if admission.only_recommendation else ""
+        statement = (
+            f"你的成果「{record.statement[:40]}」与{_teacher_name(advisor.name)}在 "
+            f"{admission.year} 年招生目录中的「{admission.direction}」方向{relation}{note}"
+        )
+        rule_points.append(
+            MatchPoint(
+                dimension="direction",
+                statement=statement[:300],
+                student_ledger_refs=[record.id],
+                advisor_refs=[
+                    SourceRef(
+                        doc_id=admission.source,
+                        locator=f"{admission.year} 招生目录 / {admission.program_code} {admission.direction_code}",
+                        quote=admission.direction,
+                    )
+                ],
             )
-            points.append(
-                MatchPoint(
-                    dimension="direction",
-                    statement=statement[:300],
-                    student_ledger_refs=[record.id],
-                    advisor_refs=[
-                        SourceRef(
-                            doc_id=admission.source,
-                            locator=f"{admission.year} 招生目录 / {admission.program_code} {admission.direction_code}",
-                            quote=admission.direction,
-                        )
-                    ],
-                )
-            )
-            if len(points) >= 3:
-                break
+        )
+        if len(rule_points) >= 3:
+            break
+
+    # ---- 选择策略 ----
+    if llm is None or rerank_mode == "rule":
+        points = rule_points
+    else:
+        llm_points = _llm_points(profile, advisor, ledger, sources, llm)
+        if rerank_mode == "hybrid":
+            points = _merge_points(rule_points, llm_points)
+        else:
+            points = llm_points or rule_points
 
     if not points:
         return None

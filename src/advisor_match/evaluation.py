@@ -286,30 +286,41 @@ def evaluate_final_rankings(
 ) -> dict:
     """规则版 vs 模型版：比较最终推荐列表的 Recall@k / nDCG@k。"""
     rows: list[dict] = []
-    rule_scores: list[tuple[float, float]] = []
-    llm_scores: list[tuple[float, float]] = []
+    score_map: dict[str, list[tuple[float, float]]] = {
+        "rule": [],
+        "llm": [],
+        "hybrid": [],
+    }
 
     for profile in profiles:
-        rule_result, _ = run_matching(profile.profile, index, llm=None)
-        llm_result, _ = run_matching(
-            profile.profile,
-            index,
-            llm=llm,
-            llm_rerank_top=llm_rerank_top,
-        )
-        rule_rank = _final_order(rule_result)
-        llm_rank = _final_order(llm_result)
+        ranks = {
+            "rule": _final_order(
+                run_matching(profile.profile, index, llm=None)[0]
+            ),
+            "llm": _final_order(
+                run_matching(
+                    profile.profile, index, llm=llm, llm_rerank_top=llm_rerank_top
+                )[0]
+            ),
+            "hybrid": _final_order(
+                run_matching(
+                    profile.profile,
+                    index,
+                    llm=llm,
+                    llm_rerank_top=llm_rerank_top,
+                    rerank_mode="hybrid",
+                )[0]
+            ),
+        }
         row = {
             "label": profile.label,
             "ground_truth": len(profile.ground_truth),
-            "rule_recall": recall_at_k(rule_rank, profile.ground_truth, k),
-            "rule_ndcg": ndcg_at_k(rule_rank, profile.ground_truth, k),
-            "llm_recall": recall_at_k(llm_rank, profile.ground_truth, k),
-            "llm_ndcg": ndcg_at_k(llm_rank, profile.ground_truth, k),
         }
+        for name, ranked in ranks.items():
+            row[f"{name}_recall"] = recall_at_k(ranked, profile.ground_truth, k)
+            row[f"{name}_ndcg"] = ndcg_at_k(ranked, profile.ground_truth, k)
+            score_map[name].append((row[f"{name}_recall"], row[f"{name}_ndcg"]))
         rows.append(row)
-        rule_scores.append((row["rule_recall"], row["rule_ndcg"]))
-        llm_scores.append((row["llm_recall"], row["llm_ndcg"]))
 
     def average(scores: list[tuple[float, float]]) -> tuple[float, float]:
         if not scores:
@@ -319,15 +330,15 @@ def evaluate_final_rankings(
             sum(item[1] for item in scores) / len(scores),
         )
 
-    rule_recall, rule_ndcg = average(rule_scores)
-    llm_recall, llm_ndcg = average(llm_scores)
-    return {
+    result = {
         "profiles": len(profiles),
-        "rule": {"recall": rule_recall, "ndcg": rule_ndcg},
-        "llm": {"recall": llm_recall, "ndcg": llm_ndcg},
         "per_profile": rows,
         "notes": "最终推荐列表（三档展开），真值仍为 2027 目录方向",
     }
+    for name, scores in score_map.items():
+        recall_score, ndcg_score = average(scores)
+        result[name] = {"recall": recall_score, "ndcg": ndcg_score}
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -407,6 +418,10 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"  llm:  R={comparison['llm']['recall']:.3f}  "
             f"N={comparison['llm']['ndcg']:.3f}"
+        )
+        print(
+            f"  hybrid: R={comparison['hybrid']['recall']:.3f}  "
+            f"N={comparison['hybrid']['ndcg']:.3f}"
         )
 
     worst = sorted(report.per_profile, key=lambda row: row["pipeline_ndcg"])[:5]

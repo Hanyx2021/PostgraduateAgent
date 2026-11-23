@@ -213,6 +213,7 @@ if start:
                 profile,
                 index,
                 llm=get_client() if use_llm_rerank else None,
+                rerank_mode="hybrid",
             )
 
         st.session_state.update(

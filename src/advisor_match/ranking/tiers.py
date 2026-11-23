@@ -14,10 +14,15 @@ from advisor_match.schemas import AdvisorMatch, MatchResult, Tier
 DIMENSION_ORDER = ("direction", "method", "experience", "resource")
 
 
-def sort_key(match: AdvisorMatch) -> tuple[int, int, str]:
-    """档内排序键。不含任何学生侧属性，因此反事实测试天然成立。"""
+def sort_key(match: AdvisorMatch, *, rule_first: bool = False) -> tuple[int, int, int, str]:
+    """档内排序键。不含任何学生侧属性，因此反事实测试天然成立。
+
+    ``rule_first`` 只用于混合模式：先按规则证据数排，模型证据只在同档内补充。
+    """
     dimensions = {point.dimension for point in match.match_points} & set(DIMENSION_ORDER)
+    rule_points = sum(1 for point in match.match_points if point.channel == "rule")
     return (
+        -rule_points if rule_first else 0,
         -len(match.match_points),
         -len(dimensions),
         match.advisor.name,
@@ -29,6 +34,7 @@ def assemble(
     *,
     keep_k: int | None = None,
     exploration_slots: int | None = None,
+    rule_first: bool = False,
 ) -> MatchResult:
     """三档组装。
 
@@ -38,7 +44,7 @@ def assemble(
     keep = settings.retrieval.keep_k if keep_k is None else keep_k
     slots = settings.exploration_slots if exploration_slots is None else exploration_slots
 
-    ordered = sorted(matches, key=sort_key)
+    ordered = sorted(matches, key=lambda match: sort_key(match, rule_first=rule_first))
     main, rest = ordered[:keep], ordered[keep:]
     exploration = rest[:slots]
     selected = main + exploration

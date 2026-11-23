@@ -176,6 +176,8 @@ class MatchPoint(BaseModel):
     """一条"为什么契合"的证据化判断。"""
 
     dimension: Dimension
+    #: 判断来源：规则版 / 模型版。混合模式下规则证据优先排序。
+    channel: Literal["rule", "llm"] = "rule"
     statement: str = Field(min_length=1, max_length=300)
     student_ledger_refs: list[str] = Field(min_length=1)
     advisor_refs: list[SourceRef] = Field(min_length=1)

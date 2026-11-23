@@ -70,6 +70,7 @@ def run_matching(
     keep_k: int | None = None,
     llm: LLMClient | None = None,
     llm_rerank_top: int | None = None,
+    rerank_mode: str = "llm",
 ) -> tuple[MatchResult, list[StageLog]]:
     """执行第 2–4 步。入口处强制检查画像不含敏感字段。
 
@@ -91,6 +92,7 @@ def run_matching(
             advisor_source_text=sources,
             embedding=embedding,
             llm=llm if use_llm else None,
+            rerank_mode=rerank_mode,
         )
 
     if llm is not None and top > 0 and candidates:
@@ -105,7 +107,7 @@ def run_matching(
     matches = [match for match in results if match is not None]
     logs.append(StageLog("rerank", len(candidates), len(matches)))
 
-    result = assemble(matches, keep_k=keep_k)
+    result = assemble(matches, keep_k=keep_k, rule_first=rerank_mode == "hybrid")
     logs.append(StageLog("tiers", len(matches), selected_count(result)))
     return result, logs
 

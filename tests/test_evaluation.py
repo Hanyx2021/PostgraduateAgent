@@ -108,7 +108,7 @@ def test_final_ranking_comparison_falls_back_to_rule() -> None:
         subset, index, llm=FastLLM(), k=1, llm_rerank_top=1
     )
     assert comparison["profiles"] == 1
-    assert comparison["rule"] == comparison["llm"]
+    assert comparison["rule"] == comparison["llm"] == comparison["hybrid"]
     assert comparison["per_profile"][0]["label"].endswith("信息检索")
 
 
