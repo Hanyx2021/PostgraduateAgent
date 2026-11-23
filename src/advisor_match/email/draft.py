@@ -138,6 +138,31 @@ def _template_draft(
     )
 
 
+_MULTI_SPACE = re.compile(r"[ 　\t]+")
+_SPACE_BETWEEN_CJK = re.compile(r"(?<=[一-鿿])\s+(?=[一-鿿])")
+_SPACE_BEFORE_PUNCT = re.compile(r"\s+(?=[，。；：！？、）])")
+_SIGNATURE_PLACEHOLDER = re.compile(r"^(学生|姓名|署名|签名)\s*[：:]\s*[—\-_＿\s]*$")
+
+
+def _clean_text(text: str, *, keep_newlines: bool = False) -> str:
+    """清理模型输出里的多余空格与断行，但保留段落内的必要换行。"""
+    sentinel = chr(0)
+    # 全角空格常用于"姓名　单位"这类分隔，先保护起来
+    text = text.replace("　", sentinel)
+    text = text.replace(chr(13), "")
+    if not keep_newlines:
+        text = text.replace(chr(10), " ")
+    text = _MULTI_SPACE.sub(" ", text)
+    text = _SPACE_BETWEEN_CJK.sub("", text)
+    text = _SPACE_BEFORE_PUNCT.sub("", text)
+    text = re.sub(r"（\s+", "（", text)
+    return text.replace(sentinel, "　").strip()
+
+
+def _is_signature_placeholder(text: str) -> bool:
+    return bool(_SIGNATURE_PLACEHOLDER.match(text.strip()))
+
+
 def _extract_json(raw: str) -> dict:
     start, end = raw.find("{"), raw.rfind("}")
     if start < 0 or end <= start:
@@ -176,10 +201,26 @@ def _llm_draft(
             paragraphs = [
                 EmailParagraph(
                     role=paragraph["role"],
-                    sentences=[EmailSentence(**sentence) for sentence in paragraph["sentences"]],
+                    sentences=[
+                        EmailSentence(
+                            **{
+                                **sentence,
+                                "text": _clean_text(str(sentence.get("text", ""))),
+                            }
+                        )
+                        for sentence in paragraph["sentences"]
+                    ],
                 )
                 for paragraph in data["paragraphs"]
             ]
+            # 模型偶尔自己写"学生：——"之类的占位署名，先去掉再统一补。
+            for paragraph in paragraphs:
+                paragraph.sentences = [
+                    sentence
+                    for sentence in paragraph.sentences
+                    if sentence.text and not _is_signature_placeholder(sentence.text)
+                ]
+            paragraphs = [paragraph for paragraph in paragraphs if paragraph.sentences]
             if {paragraph.role for paragraph in paragraphs} != {
                 "greeting",
                 "fit",
@@ -196,7 +237,7 @@ def _llm_draft(
                 closing.sentences.append(_signature_sentence(closing, signature))
             return EmailDraft(
                 recipient=contact,
-                subject=str(data["subject"]),
+                subject=_clean_text(str(data["subject"])),
                 paragraphs=paragraphs,
             )
         except Exception:  # noqa: BLE001 - 模型不可用/输出异常都进入重试
@@ -247,6 +288,13 @@ def render_plain_text(draft: EmailDraft, ledger: dict[str, LedgerRecord]) -> str
     """
     lines = [f"收件人：{draft.recipient.display_name} <{draft.recipient.email}>", f"主题：{draft.subject}", ""]
     for paragraph in draft.paragraphs:
-        lines.append("".join(sentence.text for sentence in paragraph.sentences))
+        if paragraph.role == "greeting":
+            # 称呼单独占一行
+            text = "\n".join(sentence.text for sentence in paragraph.sentences)
+        else:
+            text = "".join(sentence.text for sentence in paragraph.sentences)
+        if paragraph.role == "closing":
+            text = text.replace("。祝好", "。\n祝好").replace("。此致", "。\n此致")
+        lines.append(_clean_text(text, keep_newlines=True))
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"

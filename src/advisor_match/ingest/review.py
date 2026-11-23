@@ -16,7 +16,6 @@ from datetime import date
 from pathlib import Path
 
 from advisor_match.config import settings
-from advisor_match.ingest.advisors import load_advisors
 from advisor_match.ingest.openalex import AuthorCandidate, OpenAlexClient, normalize_name
 from advisor_match.ingest.papers import name_variants
 

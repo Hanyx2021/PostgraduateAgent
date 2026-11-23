@@ -27,6 +27,7 @@ from advisor_match.retrieval.index import AdvisorIndex
 from advisor_match.retrieval.recall import recall
 from advisor_match.retrieval.vector import LockedEmbedding, load_embedding
 from advisor_match.schemas import (
+    Advisor,
     AdvisorContact,
     AdvisorMatch,
     EmailDraft,

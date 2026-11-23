@@ -65,6 +65,11 @@ def advisors_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return path
 
 
+def goto(app: AppTest, label: str) -> AppTest:
+    app.radio(key="section").set_value(label).run()
+    return app
+
+
 def run_matching_flow(
     app: AppTest, target: str = "信息检索", statement: str = "完成信息检索方向的课程项目"
 ) -> AppTest:
@@ -75,13 +80,13 @@ def run_matching_flow(
     app.text_input(key="targets").set_value(target)
     app.text_area(key="statements").set_value(statement)
     app.button(key="run_matching").click().run()
-    return app
+    return goto(app, "② 导师匹配")
 
 
 def test_app_renders_without_exception(advisors_file: Path) -> None:
     app = AppTest.from_file(str(APP), default_timeout=30).run()
     assert not app.exception
-    assert [tab.label for tab in app.tabs] == ["① 材料与台账", "② 导师匹配", "③ 邮件草稿"]
+    assert app.radio(key="section").options == ["① 材料与台账", "② 导师匹配", "③ 邮件草稿"]
 
 
 def test_matching_shows_tiers_and_provenance(advisors_file: Path) -> None:
@@ -97,6 +102,7 @@ def test_matching_shows_tiers_and_provenance(advisors_file: Path) -> None:
 
 def test_generating_draft_shows_evidence_and_confirmation(advisors_file: Path) -> None:
     app = run_matching_flow(AppTest.from_file(str(APP), default_timeout=30).run())
+    goto(app, "③ 邮件草稿")
     app.selectbox(key="advisor_select").set_value("李老师").run()
     app.text_input(key="signature").set_value("张三　计算机系 2023 级")
     app.button(key="generate_draft").click().run()
@@ -121,6 +127,7 @@ def test_generating_draft_shows_evidence_and_confirmation(advisors_file: Path) -
 
 def test_sentence_editing_and_deletion(advisors_file: Path) -> None:
     app = run_matching_flow(AppTest.from_file(str(APP), default_timeout=30).run())
+    goto(app, "③ 邮件草稿")
     app.selectbox(key="advisor_select").set_value("李老师").run()
     app.button(key="generate_draft").click().run()
 
@@ -155,11 +162,13 @@ def test_switching_advisors_keeps_each_draft(advisors_file: Path) -> None:
         target="信息检索,数据库",
         statement="完成信息检索与数据库方向的课程项目",
     )
+    goto(app, "③ 邮件草稿")
     app.selectbox(key="advisor_select").set_value("李老师").run()
     app.button(key="generate_draft").click().run()
     assert any("推免自荐｜李老师" in item.value for item in app.markdown)
 
     # 切到王老师：还没有草稿，不应显示李老师的草稿
+    goto(app, "③ 邮件草稿")
     app.selectbox(key="advisor_select").set_value("王老师").run()
     editors = [item for item in app.text_area if item.key and item.key.startswith("edit-")]
     assert editors == []
@@ -167,13 +176,35 @@ def test_switching_advisors_keeps_each_draft(advisors_file: Path) -> None:
     assert any("推免自荐｜王老师" in item.value for item in app.markdown)
 
     # 切回李老师：草稿还在
+    goto(app, "③ 邮件草稿")
     app.selectbox(key="advisor_select").set_value("李老师").run()
     assert any("推免自荐｜李老师" in item.value for item in app.markdown)
     assert [item for item in app.text_area if item.key and item.key.startswith("edit-")]
 
 
+def test_regenerating_draft_resets_widget_state(advisors_file: Path) -> None:
+    app = run_matching_flow(AppTest.from_file(str(APP), default_timeout=30).run())
+    goto(app, "③ 邮件草稿")
+    app.button(key="generate_draft").click().run()
+
+    editors = [item for item in app.text_area if item.key and item.key.startswith("edit-")]
+    editors[0].set_value("我改过的句子。")
+    app.run()
+    for box in app.checkbox:
+        if box.label == "已核对":
+            box.check()
+    app.run()
+
+    # 重新生成同一导师的草稿：旧的编辑与勾选不能带过来
+    app.button(key="generate_draft").click().run()
+    values = [item.value for item in app.text_area if item.key and item.key.startswith("edit-")]
+    assert "我改过的句子。" not in values
+    assert all(not box.value for box in app.checkbox if box.label == "已核对")
+
+
 def test_clear_draft_removes_only_that_advisor(advisors_file: Path) -> None:
     app = run_matching_flow(AppTest.from_file(str(APP), default_timeout=30).run())
+    goto(app, "③ 邮件草稿")
     app.selectbox(key="advisor_select").set_value("李老师").run()
     app.button(key="generate_draft").click().run()
     assert [item for item in app.text_area if item.key and item.key.startswith("edit-")]
@@ -185,19 +216,30 @@ def test_clear_draft_removes_only_that_advisor(advisors_file: Path) -> None:
 
 def test_missing_email_blocks_draft(advisors_file: Path) -> None:
     app = run_matching_flow(AppTest.from_file(str(APP), default_timeout=30).run())
+    goto(app, "③ 邮件草稿")
     app.selectbox(key="advisor_select").set_value("赵老师").run()
     app.button(key="generate_draft").click().run()
     assert any("邮箱未收录" in error.value for error in app.error)
 
 
-def test_missing_target_shows_error(advisors_file: Path) -> None:
+def test_missing_resume_and_statements_shows_error(advisors_file: Path) -> None:
+    app = AppTest.from_file(str(APP), default_timeout=30).run()
+    app.checkbox(key="use_vector").uncheck()
+    app.checkbox(key="use_llm").uncheck()
+    app.run()
+    app.button(key="run_matching").click().run()
+    assert any("请先上传简历" in error.value for error in app.error)
+
+
+def test_target_direction_is_optional(advisors_file: Path) -> None:
     app = AppTest.from_file(str(APP), default_timeout=30).run()
     app.checkbox(key="use_vector").uncheck()
     app.checkbox(key="use_llm").uncheck()
     app.run()
     app.text_area(key="statements").set_value("完成信息检索方向的课程项目")
     app.button(key="run_matching").click().run()
-    assert any("目标方向" in error.value for error in app.error)
+    assert not app.exception
+    assert not any("目标方向" in error.value for error in app.error)
 
 
 def test_no_match_shows_warning(advisors_file: Path) -> None:
@@ -207,12 +249,14 @@ def test_no_match_shows_warning(advisors_file: Path) -> None:
         statement="完成量子计算方向的课程项目",
     )
     assert not app.exception
-    assert any("当前没有可写的导师" in warning.value for warning in app.warning)
     assert any("召回没有候选" in info.value for info in app.info)
+    goto(app, "③ 邮件草稿")
+    assert any("当前没有可写的导师" in warning.value for warning in app.warning)
 
 
 def test_ui_has_no_send_button(advisors_file: Path) -> None:
     app = run_matching_flow(AppTest.from_file(str(APP), default_timeout=30).run())
+    goto(app, "③ 邮件草稿")
     labels = [button.label for button in app.button]
     assert "开始匹配" in labels and "生成草稿" in labels
     assert all("发送" not in label for label in labels)

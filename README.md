@@ -1,51 +1,146 @@
 # 推研导师匹配与自荐邮件 Agent
 
-计算机工程伦理与职业素养课程项目。目标是让推研匹配的依据**从人脉与话术转向可核验的研究契合度**：
 用公开、可核验的信息完成导师匹配，用学生本人的材料生成自荐邮件，判断依据由学生本人逐句核对。
 
 - 组员：韩宇轩（数据与检索）、陈英豪（Agent 与产品）、杨骐岗（伦理与用户研究）
-- 当前阶段：**v0.2**（导师库、召回、重排、分档已可运行；论文补全待定来源）
+- 当前阶段：可运行原型。导师库、混合召回、证据化重排、台账、邮件草稿、逐句确认与留痕均已打通
 
-## 项目不是做什么
+## 它不做什么
 
 - 不自动发信，也不提供发信接口；
 - 不输出录取概率，不按历史录取数据排序；
 - 不采集姓名、性别、院校、籍贯等敏感属性；
 - 不生成没有材料依据的事实陈述。
 
-这四条由类型、数据表与权限保证，不靠提示词提醒。见 [docs/ethics-acceptance.md](docs/ethics-acceptance.md)。
+这四条由类型、字段表与权限保证，不靠提示词提醒。详见 [docs/ethics-acceptance.md](docs/ethics-acceptance.md)。
 
 ## 快速开始
 
+### 1. 环境
+
 ```bash
+cd d:/Learning/2026Autumn/ethics
 python -m venv .venv
-.venv/Scripts/activate        # Windows；macOS/Linux 用 source .venv/bin/activate
-pip install -e ".[dev]"
+.venv/Scripts/activate          # Windows；macOS/Linux 用 source .venv/bin/activate
+pip install -e ".[dev,embeddings]"
+```
 
-# 可选：在 .env 配置 AM_LLM_* 后，界面可勾选“使用模型改写邮件”
-pytest                        # 运行测试
-streamlit run app/streamlit_app.py
+### 2. 本地配置
 
-# 可选：启用向量召回（本地模型，约 95MB，不入库）
-pip install -e ".[embeddings]"
+复制 `.env.example` 为 `.env`，填写需要的 key（`.env` 已 gitignore，不会入库）：
+
+```dotenv
+# 导师论文（可选）
+AM_OPENALEX_KEY=
+
+# 模型（可选；不配置时邮件用模板、重排用规则版）
+AM_LLM_PROVIDER=deepseek
+AM_LLM_BASE_URL=https://api.deepseek.com
+AM_LLM_MODEL=deepseek-flash
+AM_LLM_API_KEY=
+```
+
+### 3. 向量模型（可选，约 95MB）
+
+```bash
 python -c "from modelscope import snapshot_download; snapshot_download('BAAI/bge-small-zh-v1.5', local_dir='data/models/bge-small-zh-v1.5')"
+```
 
-# 可选：用 OpenAlex 补导师论文（需在本地 .env 配置 AM_OPENALEX_KEY）
+没有模型时召回自动退回 BM25，主流程不受影响。
+
+### 4. 启动界面
+
+```bash
+streamlit run app/streamlit_app.py
+```
+
+如果提示找不到 `advisor_match`，先执行 `pip install -e .`，或临时用：
+
+```bash
+PYTHONPATH=src streamlit run app/streamlit_app.py
+```
+
+## 界面使用
+
+左侧边栏从上到下：
+
+1. **数据**：导师主表路径（默认 `data/processed/advisors.jsonl`）
+2. **开关**：
+   - 使用向量召回（本地 BGE）
+   - 使用模型改写邮件（DeepSeek）
+   - 上传后由模型整理台账
+   - 使用模型重排（混合模式，仅对前 10 位调用模型）
+3. **上传简历**（必填，PDF / txt / md）
+   - 解析后由模型整合成台账；姓名、电话、邮箱会先移除再发送
+   - 自动推断并填写“目标方向”，自动填写“署名”，都可手动修改
+4. **成果陈述**：上传后自动填入，也可以手动补充
+5. 点 **开始匹配**
+
+页面顶部有三个分区：
+
+- **① 材料与台账**：每条陈述及其原文出处
+- **② 导师匹配**：三档结果、每条理由的依据、招生资格与信息截止日期；可下载匹配结果 JSON
+- **③ 邮件草稿**：
+  1. 选择导师（多导师草稿分别保存，切换不丢）
+  2. 生成四段式草稿（模型失败自动退回模板）
+  3. 每句可以修改或勾选“删除”，点 **应用修改并重新校验**
+  4. 逐句勾选 **已核对**
+  5. 点 **完成确认并生成文本**：写入本地留痕，给出可复制文本
+  6. 可下载草稿 txt、确认记录 JSON
+
+> 系统不会发送邮件。最后一步由学生本人复制到自己的邮件客户端。
+
+## 数据准备
+
+导师主表与抓取结果都在本地，**不进仓库**：
+
+```
+data/processed/advisors.jsonl     导师主表
+data/processed/profiles.json      详情页解析结果
+data/processed/overrides.json     人工补录
+data/processed/aliases.json       姓名别名
+data/processed/openalex_authors.json  人工核对的作者 ID
+data/processed/manual_papers.json     官方主页题录
+data/raw/                         原始 HTML 快照
+data/models/                      本地向量模型
+data/cache/llm/                   模型响应缓存
+```
+
+一键重建导师库：
+
+```bash
+python -m advisor_match.ingest.rebuild --catalog-url "<2027 招生目录 URL>"
+```
+
+其他数据命令：
+
+```bash
+# 补导师论文（需要 AM_OPENALEX_KEY）
 python -m advisor_match.ingest.openalex --advisors data/processed/advisors.jsonl
+
 # 自动消歧失败时，生成人工核对清单
 python -m advisor_match.ingest.review
 
-# 一键重建：抓目录 → 抓名录 → 抓详情页 → OpenAlex → 落盘
-python -m advisor_match.ingest.rebuild --catalog-url "<2027 招生目录 URL>"
+# 人工指定作者 ID / 官方题录
+python -m advisor_match.ingest.openalex \
+  --advisors data/processed/advisors.jsonl \
+  --author-map data/processed/openalex_authors.json \
+  --manual-papers data/processed/manual_papers.json
+```
 
-# 命令行跑一次匹配（需要本地 data/processed/advisors.jsonl）
+## 命令行
+
+```bash
+# 跑一次匹配
 python -m advisor_match.pipeline --target "信息检索,多模态学习" \
   --statement "完成多模态检索增强生成的课程项目" --top 8
 
-# 跑评估：30 个合成画像，输出 Recall@10 / nDCG@10
+# 评估：30 个合成画像，Recall@10 / nDCG@10
 python -m advisor_match.evaluation --advisors data/processed/advisors.jsonl
-# 规则版 vs 模型版重排对比（需要 AM_LLM_API_KEY）
-python -m advisor_match.evaluation --advisors data/processed/advisors.jsonl   --rerank-compare --subset 10
+
+# 规则版 vs 模型版 vs 混合版重排对比（需要 AM_LLM_API_KEY）
+python -m advisor_match.evaluation --advisors data/processed/advisors.jsonl \
+  --rerank-compare --subset 10
 ```
 
 ## 五步流水线
@@ -62,28 +157,73 @@ python -m advisor_match.evaluation --advisors data/processed/advisors.jsonl   --
                          ⑤ 邮件草稿 + 逐句校验 → 学生确认 → 手动发送
 ```
 
-第 ④ ⑤ 步由学生决定，系统只提供依据。实现映射见 [docs/architecture.md](docs/architecture.md)。
+第 ④ ⑤ 步由学生决定，系统只提供依据。实现细节见 [docs/architecture.md](docs/architecture.md)。
+
+## 评估
+
+30 个合成画像（2027 目录方向 → 在列导师），k=10：
+
+| 召回方式 | Recall@10 | nDCG@10 |
+| --- | ---: | ---: |
+| 混合召回（BM25 0.3 + 向量 0.7） | **0.462** | **0.462** |
+| 纯向量 | 0.443 | 0.432 |
+| 纯 BM25 | 0.434 | 0.387 |
+| 主表顺序基线 | 0.141 | 0.109 |
+
+重排策略对比（10 个画像，最终推荐列表）：
+
+| 策略 | Recall@10 | nDCG@10 |
+| --- | ---: | ---: |
+| 规则版 | **0.301** | 0.311 |
+| 模型版 | 0.281 | **0.326** |
+| 混合版 | 0.300 | 0.320 |
+
+真值来自目录方向、画像是模板生成，**不是人工双盲标注**；换数据或换模型后应重新校准。
 
 ## 目录
 
 | 路径 | 内容 | 负责人 |
 | --- | --- | --- |
-| [src/advisor_match/schemas.py](src/advisor_match/schemas.py) | 全部核心数据结构（台账、匹配、草稿） | 共用 |
-| [src/advisor_match/ingest/](src/advisor_match/ingest/) | PDF / 简历 / 导师库抓取与解析 | 韩宇轩 |
+| [src/advisor_match/schemas.py](src/advisor_match/schemas.py) | 核心数据结构（台账、匹配、草稿） | 共用 |
+| [src/advisor_match/ingest/](src/advisor_match/ingest/) | 导师库抓取、解析、重建 | 韩宇轩 |
 | [src/advisor_match/retrieval/](src/advisor_match/retrieval/) | BM25 + 向量混合召回 | 韩宇轩 |
 | [src/advisor_match/ranking/](src/advisor_match/ranking/) | 证据化重排、三档组装 | 韩宇轩 |
-| [src/advisor_match/ledger/](src/advisor_match/ledger/) | 台账构建与存储（防编造的核心） | 韩宇轩 |
-| [src/advisor_match/email/](src/advisor_match/email/) | 草稿生成、claim–evidence 校验、逐句确认 | 陈英豪 |
-| [src/advisor_match/llm/](src/advisor_match/llm/) | 模型客户端与提示词 | 陈英豪 |
-| [src/advisor_match/guards/](src/advisor_match/guards/) | 敏感字段、注入、收件人三重防护 | 杨骐岗 |
-| [tests/](tests/) | 公平 / 诚实 / 安全三类验收测试 | 杨骐岗 + 各模块作者 |
+| [src/advisor_match/ledger/](src/advisor_match/ledger/) | 台账构建与存储 | 韩宇轩 |
+| [src/advisor_match/email/](src/advisor_match/email/) | 草稿生成、校验、逐句确认 | 陈英豪 |
+| [src/advisor_match/llm/](src/advisor_match/llm/) | 模型客户端、缓存、提示词 | 陈英豪 |
+| [src/advisor_match/product/](src/advisor_match/product/) | 材料解析、模型整理、导出 | 陈英豪 |
+| [src/advisor_match/guards/](src/advisor_match/guards/) | 敏感字段、注入、收件人防护 | 杨骐岗 |
+| [src/advisor_match/evaluation.py](src/advisor_match/evaluation.py) | 评估集与指标 | 韩宇轩 |
 | [app/streamlit_app.py](app/streamlit_app.py) | 界面 | 陈英豪 |
-| [docs/](docs/) | 架构、伦理验收、开题材料 | 杨骐岗 |
+| [tests/](tests/) | 公平 / 诚实 / 安全等验收测试 | 全体 |
+
+## 数据与隐私
+
+- `.env`、`data/` 全部 gitignore，密钥与简历不会进入仓库
+- 模型调用前移除姓名、电话、邮箱、身份证号；不持久化 prompt
+- 模型响应缓存只存返回文本，目录 `data/cache/llm/`，可随时删除
+- 确认日志 `data/processed/confirmations.jsonl` 只记行为（导师、时间、句数、台账 ID、修改比例），不记正文
+
+## 已知限制
+
+- 扫描版 PDF 没有文字层，不做 OCR
+- 评估真值是合成画像，不是人工双盲标注；结论需人工复核
+- 模型重排只对前 10 位调用，冷启动约 40–50 秒；命中缓存约 2 秒
+- 刘卫东暂无可核验的近期论文
+- 导师招聘名额官方不公布，界面只写“在列”，不写名额
+
+## 测试
+
+```bash
+pytest
+python -m ruff check app src --select E9,F
+```
+
+覆盖：台账证据绑定、无据陈述丢弃、收件人核对、提示注入 20 条样本、反事实一致性、模型抽取降级、界面冒烟测试。
 
 ## 开发约定
 
-1. **先改数据结构，再写功能。** 任何涉及"记录 / 判断 / 句子"的改动先动 `schemas.py`，让测试先失败再实现。
-2. **不要绕过校验器。** 生成的内容必须经过 `validator.validate_draft` 才能进入界面。
-3. **新增字段前自问**：这个字段会不会让院校、性别、籍贯影响排序？会的话不要加进 `StudentProfile`。
-4. **提交信息**用英文一句话说明改了什么，前缀用 `feat/fix/test/docs/refactor`。
-5. 每个模块的 `NotImplementedError` 里写了负责人和实现要点，接手的同学从那里开始。
+1. **先改数据结构，再写功能**：涉及“记录 / 判断 / 句子”的改动先动 `schemas.py`
+2. **不要绕过校验器**：生成内容必须经过 `validate_draft` 才能进入界面
+3. **新增字段前自问**：这个字段会不会让院校、性别、籍贯影响排序？
+4. **提交信息**用英文一句话，前缀 `feat/fix/test/docs/refactor`

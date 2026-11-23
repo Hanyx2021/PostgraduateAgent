@@ -53,6 +53,29 @@ def test_run_email_rejects_draft_with_wrong_salutation() -> None:
     assert any(issue.code == "wrong_salutation" for issue in issues)
 
 
+def greeting_draft(text: str):
+    contact = make_contact("黄民烈", "huang@example.edu.cn")
+    draft = build_draft(make_match(), contact, make_ledger())
+    draft.paragraphs[0].sentences[0].text = text
+    return draft, contact
+
+
+def test_surname_salutation_is_accepted() -> None:
+    draft, contact = greeting_draft("黄老师：您好！")
+    assert check_recipient(draft, contact) == []
+
+
+def test_professor_title_is_accepted() -> None:
+    draft, contact = greeting_draft("尊敬的黄教授：您好！")
+    assert check_recipient(draft, contact) == []
+
+
+def test_different_surname_is_rejected() -> None:
+    draft, contact = greeting_draft("王老师：您好！")
+    codes = {issue.code for issue in check_recipient(draft, contact)}
+    assert "wrong_salutation" in codes
+
+
 def test_llm_draft_is_used_when_valid() -> None:
     response = json.dumps(
         {

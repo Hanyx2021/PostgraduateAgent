@@ -27,10 +27,13 @@ from advisor_match.ingest.advisors import load_advisors
 from advisor_match.llm.client import get_client
 from advisor_match.pipeline import EmailResult, RecipientMismatch, run_email, run_matching
 from advisor_match.product.export import confirmation_json, match_result_json
+from advisor_match.product.extraction import extract_records
 from advisor_match.product.materials import (
     decode_material,
     extract_pdf_text,
+    extract_signature,
     statements_from_text,
+    upload_token,
 )
 from advisor_match.retrieval.index import AdvisorIndex
 from advisor_match.retrieval.vector import load_embedding
@@ -144,6 +147,12 @@ with st.sidebar:
     )
     if use_llm:
         st.caption(f"模型：{settings.llm_model or '未配置'}")
+    use_llm_extract = st.checkbox(
+        "上传后由模型整理台账",
+        value=bool(settings.llm_api_key),
+        key="use_llm_extract",
+        help="材料会先移除姓名与联系方式，再发送给模型整理。",
+    )
     use_llm_rerank = st.checkbox(
         f"使用模型重排（仅前 {settings.llm_rerank_top} 位）",
         value=False,
@@ -153,36 +162,88 @@ with st.sidebar:
         st.caption(f"并发 {settings.llm_rerank_workers} 路；结果缓存在本地，重复匹配会快很多。")
 
     st.subheader("你的材料")
-    target_text = st.text_input("目标方向（逗号分隔）", placeholder="信息检索, 多模态学习", key="targets")
-    interest_text = st.text_input("研究兴趣（可选，逗号分隔）", placeholder="大模型, 检索增强", key="interests")
-
     uploaded = st.file_uploader(
-        "上传材料（txt / md / pdf）", type=["txt", "md", "pdf"], key="materials_upload"
+        "上传简历（必填，PDF / txt / md）",
+        type=["txt", "md", "pdf"],
+        key="materials_upload",
+        help="上传后会解析成台账；PDF 若为扫描版可能没有文字层。",
     )
     if uploaded is not None:
-        token = f"{uploaded.name}:{uploaded.size}"
+        raw = uploaded.getvalue()
+        token = upload_token(uploaded.name, uploaded.size, raw)
         if st.session_state.get("upload_token") != token:
-            raw = uploaded.getvalue()
             extra_warnings: list[str] = []
             if uploaded.name.lower().endswith(".pdf"):
                 text, extra_warnings = extract_pdf_text(raw)
             else:
                 text = decode_material(raw)
-            parsed, warnings = statements_from_text(text)
+
+            suggested_signature = extract_signature(text)
+            st.session_state["suggested_signature"] = suggested_signature
+
+            if use_llm_extract and settings.llm_api_key:
+                with st.spinner("模型正在整理台账，约 10–30 秒，请勿关闭页面…"):
+                    result = extract_records(text, get_client())
+                parsed = [record.statement for record in result.records]
+                warnings = list(result.warnings)
+                summary = f"模型整理完成：{len(result.records)} 条台账，引文已逐条校验"
+                st.session_state["uploaded_records"] = [
+                    record.model_dump(mode="json") for record in result.records
+                ]
+                st.session_state["uploaded_snapshot"] = parsed
+
+                # 自动填目标方向，但不覆盖用户手改过的内容
+                suggested = ", ".join(result.directions)
+                if suggested:
+                    current = st.session_state.get("targets", "")
+                    previous = st.session_state.get("targets_autofilled", "")
+                    if not current.strip() or current == previous:
+                        st.session_state["targets"] = suggested
+                        st.session_state["targets_autofilled"] = suggested
+                        st.session_state["targets_note"] = (
+                            "已根据材料自动填写目标方向，可以直接修改。"
+                        )
+            else:
+                parsed, warnings = statements_from_text(text)
+                summary = f"按行解析：{len(parsed)} 条陈述"
+                st.session_state.pop("uploaded_records", None)
+                st.session_state.pop("uploaded_snapshot", None)
+
             st.session_state["statements"] = "\n".join(parsed)
+            st.session_state["upload_summary"] = summary
             st.session_state["upload_token"] = token
             st.session_state["upload_warnings"] = [*extra_warnings, *warnings]
             st.rerun()
+
+    if st.session_state.get("upload_summary"):
+        st.caption(st.session_state["upload_summary"])
     for warning in st.session_state.get("upload_warnings", []):
         st.caption(f"· {warning}")
-    st.caption("材料只在本地解析，不上传、不保存。")
+    st.caption("材料只在本地解析；启用模型整理时会先脱敏再发送。")
+
+    target_text = st.text_input(
+        "目标方向（可选，逗号分隔）",
+        placeholder="可留空，上传材料后会自动填写",
+        key="targets",
+        help="用于召回导师；留空时只靠材料陈述召回。上传后可用模型推断。",
+    )
+    if st.session_state.get("targets_note"):
+        st.caption(st.session_state["targets_note"])
+
+    interest_text = st.text_input(
+        "研究兴趣（可选，逗号分隔）",
+        placeholder="可选，例如：大模型, 检索增强",
+        key="interests",
+    )
 
     statement_text = st.text_area(
-        "成果陈述（每行一条，会成为台账记录）",
-        placeholder="完成多模态检索增强生成的课程项目\n以二作身份发表 ACL Findings 2025 论文",
+        "成果陈述（必填，每行一条）",
+        placeholder="每行一条，例如：\n完成多模态检索增强生成的课程项目\n以二作身份发表 ACL Findings 2025 论文",
         height=120,
         key="statements",
+        help="上传文件会自动填入；也可以直接手写。",
     )
+
     start = st.button("开始匹配", type="primary", key="run_matching")
 
     st.divider()
@@ -194,32 +255,52 @@ if start:
     targets = [item.strip() for item in target_text.split(",") if item.strip()]
     interests = [item.strip() for item in interest_text.split(",") if item.strip()]
 
-    if not statements:
-        st.error("至少填写一条成果陈述，否则匹配没有可核验材料。")
-    elif not targets:
+    if uploaded is None and not statements:
+        st.error("请先上传简历 PDF；如果没有文件，也可以手动填写成果陈述。")
+    elif not statements:
         st.error(
-            "请至少填写一个目标方向（例如：信息检索、多模态学习）。"
-            "没有方向线索时召回会是 0 位。"
+            "材料里没有解析出有效陈述。请检查 PDF 是否为扫描版，"
+            "或在成果陈述里手动补充一条。"
         )
     else:
         path = Path(data_path)
-        if path.exists():
-            index, vector_on = load_index(data_path, read_mtime(data_path), use_vector)
-        else:
-            demo = demo_advisors()
-            embedding = load_embedding() if use_vector else None
-            index = AdvisorIndex.build(demo, embedding=embedding)
-            vector_on = bool(embedding)
-            st.warning("未找到导师数据文件，当前使用两位虚构导师演示。")
+        with st.spinner("正在加载导师索引…首次使用需加载本地向量模型，约 5–10 秒。"):
+            if path.exists():
+                index, vector_on = load_index(data_path, read_mtime(data_path), use_vector)
+            else:
+                demo = demo_advisors()
+                embedding = load_embedding() if use_vector else None
+                index = AdvisorIndex.build(demo, embedding=embedding)
+                vector_on = bool(embedding)
+                st.warning("未找到导师数据文件，当前使用两位虚构导师演示。")
 
-        profile, ledger = build_profile(targets, interests, statements)
-        with st.spinner("匹配中…"):
+        stored = st.session_state.get("uploaded_records")
+        snapshot = st.session_state.get("uploaded_snapshot")
+        if stored and snapshot and statements == snapshot:
+            ledger = {
+                item["id"]: LedgerRecord.model_validate(item) for item in stored
+            }
+            profile = StudentProfile(
+                ledger=list(ledger.values()),
+                target_directions=targets,
+                interests=interests,
+            )
+        else:
+            profile, ledger = build_profile(targets, interests, statements)
+        message = (
+            "模型重排中，约 30–90 秒，请勿关闭页面…"
+            if use_llm_rerank
+            else "正在召回与重排…"
+        )
+        with st.spinner(message):
             result, logs = run_matching(
                 profile,
                 index,
                 llm=get_client() if use_llm_rerank else None,
                 rerank_mode="hybrid",
             )
+        matched_count = len(result.core) + len(result.adjacent) + len(result.needs_support)
+        st.success(f"匹配完成：{matched_count} 位导师进入推荐。")
 
         st.session_state.update(
             {
@@ -240,9 +321,15 @@ if start:
 result = st.session_state.get("result")
 ledger = st.session_state.get("ledger") or {}
 
-tab_ledger, tab_match, tab_email = st.tabs(["① 材料与台账", "② 导师匹配", "③ 邮件草稿"])
+section = st.radio(
+    "页面",
+    ["① 材料与台账", "② 导师匹配", "③ 邮件草稿"],
+    horizontal=True,
+    label_visibility="collapsed",
+    key="section",
+)
 
-with tab_ledger:
+if section == "① 材料与台账":
     st.subheader("成果台账")
     if ledger:
         st.caption(f"数据来源：{st.session_state.get('data_source', '—')}")
@@ -261,7 +348,7 @@ with tab_ledger:
     else:
         st.info("在左侧填写材料并点击「开始匹配」。")
 
-with tab_match:
+if section == "② 导师匹配":
     if result is None:
         st.info("尚未开始匹配。")
     else:
@@ -281,7 +368,8 @@ with tab_match:
                     "可以换更常见的方向词，或补充研究兴趣。"
                 )
             else:
-                count = stage_logs["rerank"].input_count if stage_logs.get("rerank") else 0
+                rerank_log = stage_logs.get("rerank")
+                count = rerank_log.input_count if rerank_log else 0
                 st.info(
                     f"召回到 {count} 位导师，但没有任何判断能绑定到你的台账。"
                     "请确认陈述里写到了具体研究方向或项目；系统不会生成没有依据的推荐。"
@@ -320,7 +408,7 @@ with tab_match:
             key="download_match",
         )
 
-with tab_email:
+if section == "③ 邮件草稿":
     if result is None:
         st.info("先完成匹配，再选择一位导师生成草稿。")
     else:
@@ -338,9 +426,22 @@ with tab_email:
             advisor = match.advisor
             entry = drafts.get(name)
 
+            suggested = st.session_state.get("suggested_signature")
+            if suggested:
+                current = st.session_state.get("signature", "")
+                previous = st.session_state.get("signature_autofilled", "")
+                if not current.strip() or current == previous:
+                    st.session_state["signature"] = suggested
+                    st.session_state["signature_autofilled"] = suggested
+
             signature = st.text_input(
-                "署名（只用于生成草稿，不保存）", placeholder="张三　计算机系 2023 级", key="signature"
+                "署名（只用于生成草稿，不保存）",
+                placeholder="张三　计算机系 2023 级",
+                key="signature",
+                help="从简历自动填写姓名与院系，可直接修改。",
             )
+            if suggested:
+                st.caption("署名已根据简历自动填写，可直接修改。")
             points_text = st.text_area(
                 "你自己的想法（每行一句，只保留能对上台账的句子）", height=90, key="points"
             )
@@ -351,23 +452,35 @@ with tab_email:
                     st.error("该导师邮箱未收录，无法确定收件人。")
                 else:
                     contact = AdvisorContact(display_name=advisor.name, email=advisor.email)
+                    message = (
+                        "模型正在生成草稿，约 10–20 秒，请勿关闭页面…"
+                        if use_llm
+                        else "正在生成草稿…"
+                    )
                     try:
-                        email_result = run_email(
-                            match,
-                            contact,
-                            ledger,
-                            student_points=[
-                                line.strip() for line in points_text.splitlines() if line.strip()
-                            ],
-                            student_signature=signature,
-                            llm=get_client() if use_llm else None,
-                        )
+                        with st.spinner(message):
+                            email_result = run_email(
+                                match,
+                                contact,
+                                ledger,
+                                student_points=[
+                                    line.strip()
+                                    for line in points_text.splitlines()
+                                    if line.strip()
+                                ],
+                                student_signature=signature,
+                                llm=get_client() if use_llm else None,
+                            )
                     except RecipientMismatch as error:
                         st.error(f"收件人核对未通过：{error}")
                     else:
+                        st.session_state["draft_seq"] = (
+                            st.session_state.get("draft_seq", 0) + 1
+                        )
                         entry = {
                             "result": email_result,
                             "contact": contact,
+                            "generation": st.session_state["draft_seq"],
                             "revision": 0,
                             "edited_total": 0,
                             "confirmed": {},
@@ -388,12 +501,13 @@ with tab_email:
                 )
 
                 revision = entry["revision"]
+                generation = entry.get("generation", 0)
                 confirmed: dict[str, bool] = entry["confirmed"]
                 for paragraph in draft.paragraphs:
                     st.markdown(f"**{paragraph.role}**")
                     for index, sentence in enumerate(paragraph.sentences):
-                        sid = f"{name}-{revision}-{paragraph.role}-{index}"
-                        col_text, col_ops = st.columns([5, 1])
+                        sid = f"{name}-{generation}-{revision}-{paragraph.role}-{index}"
+                        col_text, col_ops = st.columns([4, 2])
                         with col_text:
                             st.text_area(
                                 "句子",
@@ -412,9 +526,15 @@ with tab_email:
                                 st.caption("非事实陈述（不绑定台账）")
                         with col_ops:
                             confirmed[sid] = st.checkbox(
-                                "已核对", key=f"check-{sid}", label_visibility="collapsed"
+                                "已核对",
+                                key=f"check-{sid}",
+                                help="确认这句话的事实与材料一致。",
                             )
-                            st.checkbox("删除", key=f"del-{sid}")
+                            st.checkbox(
+                                "删除",
+                                key=f"del-{sid}",
+                                help="勾选后点「应用修改并重新校验」才会移除这句。",
+                            )
 
                 if st.button("应用修改并重新校验", key="apply_edits"):
                     new_paragraphs = []
@@ -422,7 +542,7 @@ with tab_email:
                     for paragraph in draft.paragraphs:
                         kept = []
                         for index, sentence in enumerate(paragraph.sentences):
-                            sid = f"{name}-{revision}-{paragraph.role}-{index}"
+                            sid = f"{name}-{generation}-{revision}-{paragraph.role}-{index}"
                             text = str(st.session_state.get(f"edit-{sid}", sentence.text)).strip()
                             if st.session_state.get(f"del-{sid}") or not text:
                                 continue

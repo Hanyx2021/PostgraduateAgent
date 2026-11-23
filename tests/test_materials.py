@@ -7,7 +7,9 @@ import pytest
 from advisor_match.product.materials import (
     decode_material,
     extract_pdf_text,
+    extract_signature,
     statements_from_text,
+    upload_token,
 )
 
 
@@ -30,6 +32,46 @@ def test_skips_headings_blank_lines_and_duplicates() -> None:
     assert any("重复" in warning for warning in warnings)
     assert "教育背景" not in statements
     assert "项目" not in statements
+
+
+def test_skips_section_titles_and_person_names() -> None:
+    text = "科研兴趣\n韩宇轩\n数据库\n机器学习\n完成检索项目"
+    statements, _ = statements_from_text(text)
+    assert statements == ["数据库", "机器学习", "完成检索项目"]
+
+
+def test_upload_token_depends_on_content() -> None:
+    first = upload_token("cv.pdf", 10, b"abc")
+    assert upload_token("cv.pdf", 10, b"abc") == first
+    assert upload_token("cv.pdf", 10, b"abd") != first
+
+
+def test_extracts_signature_from_name_and_school() -> None:
+    text = "韩宇轩\n清华大学 计算机科学与技术系\n完成检索项目"
+    signature = extract_signature(text)
+    assert signature is not None
+    assert signature.startswith("韩宇轩")
+    assert "清华大学" in signature
+
+
+def test_extracts_signature_from_explicit_name_field() -> None:
+    text = "姓名：李四\n某某大学 计算机学院"
+    assert extract_signature(text) == "李四　某某大学 计算机学院"
+
+
+def test_missing_signature_returns_none() -> None:
+    assert extract_signature("完成课程项目\n熟悉 Python") is None
+
+
+def test_removes_contact_information() -> None:
+    text = "邮箱：user@example.com\n电话：13800138000\n完成项目，材料可通过 a@b.com 获取\n技能：Python"
+    statements, warnings = statements_from_text(text)
+    joined = "\n".join(statements)
+    assert "user@example.com" not in joined
+    assert "13800138000" not in joined
+    assert "a@b.com" not in joined
+    assert any("联系方式" in warning for warning in warnings)
+    assert "技能：Python" in statements
 
 
 def test_skips_overlong_lines() -> None:

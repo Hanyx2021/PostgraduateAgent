@@ -34,16 +34,24 @@ def check_recipient(draft: EmailDraft, contact: AdvisorContact) -> list[Recipien
             RecipientIssue("email_mismatch", "草稿收件邮箱与当前联系人邮箱不一致")
         )
 
-    # 正文首段必须出现导师姓名，否则视为模板未替换。
+    # 正文首段必须出现导师称呼，否则视为模板未替换。
+    # 允许"尊敬的X老师""X老师""X教授"；X 可以是姓氏或全名。
     first_paragraph = "".join(s.text for s in draft.paragraphs[0].sentences)
-    salutation = re.search(r"尊敬的\s*([^\s，,：:！!。]{1,10}?)\s*老师", first_paragraph)
+    title_pattern = r"(?:副教授|老师|教授|研究员)"
+    salutation = re.search(
+        rf"尊敬的\s*([^\s，,：:！!。]{{1,10}}?)\s*{title_pattern}", first_paragraph
+    )
+    if salutation is None:
+        salutation = re.search(rf"([一-龥]{{1,4}})\s*{title_pattern}", first_paragraph)
+
     if salutation is not None:
-        # "尊敬的X老师"中的 X 必须是联系人姓名的子串，防止串行到另一位导师。
-        if salutation.group(1) not in contact.display_name:
+        captured = salutation.group(1)
+        # 姓氏或全名都算匹配；完全不同的姓氏视为串错导师。
+        if captured not in contact.display_name and contact.display_name not in captured:
             issues.append(
                 RecipientIssue(
                     "wrong_salutation",
-                    f"正文称呼「{salutation.group(1)}老师」与联系人「{contact.display_name}」不一致",
+                    f"正文称呼「{captured}」与联系人「{contact.display_name}」不一致",
                 )
             )
     elif contact.display_name not in first_paragraph:
