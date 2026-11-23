@@ -190,6 +190,16 @@ def test_missing_email_blocks_draft(advisors_file: Path) -> None:
     assert any("邮箱未收录" in error.value for error in app.error)
 
 
+def test_missing_target_shows_error(advisors_file: Path) -> None:
+    app = AppTest.from_file(str(APP), default_timeout=30).run()
+    app.checkbox(key="use_vector").uncheck()
+    app.checkbox(key="use_llm").uncheck()
+    app.run()
+    app.text_area(key="statements").set_value("完成信息检索方向的课程项目")
+    app.button(key="run_matching").click().run()
+    assert any("目标方向" in error.value for error in app.error)
+
+
 def test_no_match_shows_warning(advisors_file: Path) -> None:
     app = run_matching_flow(
         AppTest.from_file(str(APP), default_timeout=30).run(),
@@ -198,6 +208,7 @@ def test_no_match_shows_warning(advisors_file: Path) -> None:
     )
     assert not app.exception
     assert any("当前没有可写的导师" in warning.value for warning in app.warning)
+    assert any("召回没有候选" in info.value for info in app.info)
 
 
 def test_ui_has_no_send_button(advisors_file: Path) -> None:

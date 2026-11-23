@@ -196,6 +196,11 @@ if start:
 
     if not statements:
         st.error("至少填写一条成果陈述，否则匹配没有可核验材料。")
+    elif not targets:
+        st.error(
+            "请至少填写一个目标方向（例如：信息检索、多模态学习）。"
+            "没有方向线索时召回会是 0 位。"
+        )
     else:
         path = Path(data_path)
         if path.exists():
@@ -267,6 +272,20 @@ with tab_match:
         )
         for log in st.session_state.get("logs", []):
             st.caption(f"[{log.stage}] {log.input_count} → {log.output_count}")
+
+        if not (result.core or result.adjacent or result.needs_support):
+            stage_logs = {log.stage: log for log in st.session_state.get("logs", [])}
+            if stage_logs.get("recall") and stage_logs["recall"].output_count == 0:
+                st.info(
+                    "召回没有候选：目标方向与导师库的词汇差异太大，或该方向没有导师。"
+                    "可以换更常见的方向词，或补充研究兴趣。"
+                )
+            else:
+                count = stage_logs["rerank"].input_count if stage_logs.get("rerank") else 0
+                st.info(
+                    f"召回到 {count} 位导师，但没有任何判断能绑定到你的台账。"
+                    "请确认陈述里写到了具体研究方向或项目；系统不会生成没有依据的推荐。"
+                )
 
         for tier, label in (
             ("core", "核心契合"),
