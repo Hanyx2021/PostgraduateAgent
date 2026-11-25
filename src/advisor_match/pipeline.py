@@ -21,7 +21,7 @@ from advisor_match.config import settings
 from advisor_match.guards.sensitive import assert_no_sensitive_fields
 from advisor_match.ingest.advisors import load_advisors
 from advisor_match.llm.client import LLMClient
-from advisor_match.ranking.rerank import rerank_one
+from advisor_match.ranking.rerank import recall_only_match, rerank_one
 from advisor_match.ranking.tiers import assemble, selected_count, tier_label
 from advisor_match.retrieval.index import AdvisorIndex
 from advisor_match.retrieval.recall import recall
@@ -108,7 +108,26 @@ def run_matching(
     matches = [match for match in results if match is not None]
     logs.append(StageLog("rerank", len(candidates), len(matches)))
 
-    result = assemble(matches, keep_k=keep_k, rule_first=rerank_mode == "hybrid")
+    result = assemble(
+        matches,
+        keep_k=keep_k,
+        rule_first=rerank_mode == "hybrid",
+    )
+
+    selected_names = {
+        match.advisor.name
+        for tier in ("core", "adjacent", "needs_support")
+        for match in getattr(result, tier)
+    }
+    matched_by_name = {match.advisor.name: match for match in matches}
+    others: list[AdvisorMatch] = []
+    for advisor in candidates:
+        if advisor.name in selected_names:
+            continue
+        others.append(matched_by_name.get(advisor.name) or recall_only_match(advisor))
+        if len(others) >= settings.recall_only_slots:
+            break
+    result.recall_only = others
     logs.append(StageLog("tiers", len(matches), selected_count(result)))
     return result, logs
 

@@ -300,7 +300,8 @@ if start:
                 rerank_mode="hybrid",
             )
         matched_count = len(result.core) + len(result.adjacent) + len(result.needs_support)
-        st.success(f"匹配完成：{matched_count} 位导师进入推荐。")
+        extra = f"，另有 {len(result.recall_only)} 位仅方向相关" if result.recall_only else ""
+        st.success(f"匹配完成：{matched_count} 位导师进入推荐{extra}。")
 
         st.session_state.update(
             {
@@ -394,6 +395,20 @@ if section == "② 导师匹配":
                         st.caption("依据：" + "、".join(point.student_ledger_refs))
                     for gap in match.gaps:
                         st.write(f"· 需要补充：{gap.statement}")
+
+        if result.recall_only:
+            st.markdown("### 其他召回候选（未进入三档）")
+            st.caption(
+                "这些导师被系统召回但没有进入前三档，仅供你自行判断；"
+                "不会为它们生成邮件草稿。"
+            )
+            for match in result.recall_only:
+                with st.expander(match.advisor.name):
+                    render_advisor_meta(match.advisor)
+                    for point in match.match_points:
+                        st.write(f"· {point.statement}")
+                    for gap in match.gaps:
+                        st.write(gap.statement)
 
         if result.excluded:
             with st.expander(f"未列入（{len(result.excluded)} 位）"):

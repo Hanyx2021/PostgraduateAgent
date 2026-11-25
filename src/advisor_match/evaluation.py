@@ -253,7 +253,7 @@ def _final_order(result) -> list[str]:
         match.advisor.name
         for tier in ("core", "adjacent", "needs_support")
         for match in getattr(result, tier)
-    ]
+    ] + [match.advisor.name for match in result.recall_only]
 
 
 def select_subset(profiles: list[EvalProfile], n: int) -> list[EvalProfile]:

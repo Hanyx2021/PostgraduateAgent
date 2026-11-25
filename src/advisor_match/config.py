@@ -51,6 +51,8 @@ class RetrievalConfig(BaseModel):
 
 class Settings(BaseModel):
     retrieval: RetrievalConfig = RetrievalConfig()
+    #: 仅方向相关的候选最多显示多少位。
+    recall_only_slots: int = 8
     #: 实验性探索位数量：每档至少保留 1 位"分数不高但值得看"的候选，
     #: 用来对抗排序的自我实现（幻灯片 5 "保留三个探索位"）。
     exploration_slots: int = 3

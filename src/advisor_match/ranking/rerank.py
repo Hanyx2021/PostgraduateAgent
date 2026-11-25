@@ -48,6 +48,23 @@ def _student_text(profile: StudentProfile) -> str:
     return " ".join(part for part in parts if part)
 
 
+def recall_only_match(advisor: Advisor) -> AdvisorMatch:
+    """方向相关但没有材料依据：只给方向和提示，不生成事实判断。"""
+    return AdvisorMatch(
+        advisor=advisor,
+        tier="needs_support",
+        match_points=[],
+        gaps=[
+            Gap(
+                statement=(
+                    "系统按你的材料召回到了这位导师，但没有找到可绑定的依据；"
+                    "不生成邮件草稿，请自行判断"
+                )
+            )
+        ],
+    )
+
+
 def _teacher_name(name: str) -> str:
     return name if name.endswith("老师") else f"{name}老师"
 

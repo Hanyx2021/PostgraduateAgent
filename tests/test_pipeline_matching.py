@@ -78,6 +78,25 @@ def test_llm_rerank_only_calls_top_candidates() -> None:
     assert len(llm.prompts) == 2
 
 
+def test_recall_only_candidates_are_kept_separately() -> None:
+    advisors = [make_advisor("甲", ["信息检索"])]
+    index = AdvisorIndex.build(advisors)
+    profile = StudentProfile(
+        ledger=[
+            LedgerRecord(
+                id="L-0001",
+                kind="other",
+                statement="完成英语课程项目",
+                evidence=[SourceRef(doc_id="r", locator="p", quote="完成英语课程项目")],
+            )
+        ],
+        target_directions=["信息检索"],
+    )
+    result, _ = run_matching(profile, index, keep_k=3)
+    assert result.core == [] and result.adjacent == []
+    assert [match.advisor.name for match in result.recall_only] == ["甲"]
+
+
 def test_processing_is_reproducible() -> None:
     index = AdvisorIndex.build([make_advisor("甲", ["信息检索"]), make_advisor("乙", ["信息检索"])])
     first, _ = run_matching(make_profile(), index, keep_k=2)
