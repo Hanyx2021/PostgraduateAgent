@@ -83,6 +83,36 @@ def test_education_record_is_not_research_evidence() -> None:
     assert rerank_one(profile, advisor) is None
 
 
+def test_award_record_is_not_research_evidence() -> None:
+    advisor = make_advisor(["计算机图形学"])
+    profile = StudentProfile(
+        ledger=[
+            LedgerRecord(
+                id="L-0001",
+                kind="award",
+                statement="获计算机图形学课程优秀奖",
+                evidence=[SourceRef(doc_id="r", locator="p1", quote="获计算机图形学课程优秀奖")],
+            )
+        ],
+        target_directions=["计算机图形学"],
+    )
+    assert rerank_one(profile, advisor) is None
+
+
+def test_english_function_words_do_not_create_match() -> None:
+    advisor = make_advisor(["Computer Vision"])
+    profile = make_profile(["Computer Vision"], "Worked on a project with the team")
+    assert rerank_one(profile, advisor) is None
+
+
+def test_english_topic_words_can_still_match() -> None:
+    advisor = make_advisor(["Computer Vision"])
+    profile = make_profile(["Computer Vision"], "Built a vision model for object detection")
+    match = rerank_one(profile, advisor)
+    assert match is not None
+    assert "vision" in match.match_points[0].statement.lower()
+
+
 def test_llm_cannot_cite_education_record() -> None:
     advisor = make_advisor(["信息检索"])
     profile = StudentProfile(

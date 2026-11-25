@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import re
 
+import jieba
 import numpy as np
 
 from advisor_match.config import settings
@@ -32,27 +33,64 @@ from advisor_match.schemas import (
 )
 
 PUNCTUATION = re.compile(r"[\s，。；：、,.;:!?（）()]")
+CJK_RUN = re.compile(r"[一-鿿]+")
 
 
 def _bigrams(text: str) -> set[str]:
-    cleaned = PUNCTUATION.sub("", text)
-    return {cleaned[index : index + 2] for index in range(len(cleaned) - 1)}
+    """只在连续中文段内取二元组；英文靠分词，避免字母对（on/te）造成假重合。"""
+    return {
+        chunk[index : index + 2]
+        for chunk in CJK_RUN.findall(text)
+        for index in range(len(chunk) - 1)
+    }
 
 
-#: 这些二元组太泛，不能作为"方向相关"的证据（如"计算机"与"计算社会学"）。
-STOP_BIGRAMS = {
-    "计算", "信息", "系统", "科学", "技术", "研究", "学习",
-    "方法", "工程", "大学", "本科", "专业", "学院",
+#: 这些词太泛，不能作为"方向相关"的证据。
+STOP_WORDS = {
+    "计算机", "大学", "本科", "毕业", "毕业生", "优秀", "学生", "专业", "学院",
+    "系", "课程", "项目", "研究", "学习", "方法", "技术", "系统", "科学", "工程",
+    "信息", "计算", "与", "及", "的", "等", "相关", "方向", "年级",
+    # 英文简历里的虚词与泛词，避免 "on/with/project" 制造假重合
+    "the", "and", "for", "with", "from", "into", "onto", "using", "used", "based",
+    "via", "our", "their", "this", "that", "these", "those", "project", "projects",
+    "experience", "research", "intern", "internship", "student", "university",
+    "college", "school", "course", "courses", "paper", "papers", "method",
+    "methods", "system", "systems", "information", "computer", "science",
+    "learning", "model", "models", "data", "study", "work", "team",
 }
+
+#: 这些台账类型不能作为研究方向证据。
+EVIDENCE_KINDS = {"paper", "course_project", "internship", "skill", "other"}
 
 
 def _overlap(left: str, right: str) -> int:
-    return len(_bigrams(left) & _bigrams(right))
+    return len(_tokens(left) & _tokens(right))
+
+
+def _tokens(text: str) -> set[str]:
+    """分词后只保留实词，避免"计算机"和"计算社会学"这类假重合。"""
+    tokens: set[str] = set()
+    for word in jieba.lcut(PUNCTUATION.sub(" ", text)):
+        if len(word) < 2:
+            continue
+        token = word.lower() if word.isascii() else word
+        if token not in STOP_WORDS:
+            tokens.add(token)
+    return tokens
+
+
+#: 通用二元组，同样不能作为证据。
+STOP_BIGRAMS = {
+    "计算", "算机", "机科", "信息", "系统", "科学", "技术", "研究", "学习",
+    "方法", "工程", "大学", "本科", "专业", "学院", "毕业", "优秀", "学生", "课程",
+}
 
 
 def _content_overlap(left: str, right: str) -> int:
-    """去掉通用词后再看重合，避免"计算机""信息"这类词制造假相关。"""
-    return len((_bigrams(left) - STOP_BIGRAMS) & (_bigrams(right) - STOP_BIGRAMS))
+    """分词实词重合 + 非通用二元组重合，兼顾"信息检索/检索"这类子词匹配。"""
+    token_hits = len(_tokens(left) & _tokens(right))
+    bigram_hits = len((_bigrams(left) - STOP_BIGRAMS) & (_bigrams(right) - STOP_BIGRAMS))
+    return token_hits + bigram_hits
 
 
 def _student_text(profile: StudentProfile) -> str:
@@ -103,8 +141,8 @@ def _supporting_record(
     best_score = (0, 0.0)
     threshold = settings.retrieval.rerank_min_similarity
     for record in ledger.values():
-        # 教育背景不是研究方向证据
-        if record.kind == "education":
+        # 教育背景、获奖等不是研究方向证据
+        if record.kind not in EVIDENCE_KINDS:
             continue
         lexical = _content_overlap(tag, record.statement)
         semantic = _cosine(tag_vector, (record_vectors or {}).get(record.id))
@@ -184,7 +222,7 @@ def _llm_points(
         refs = [
             ref
             for ref in item.get("student_ledger_refs", [])
-            if ref in ledger and ledger[ref].kind != "education"
+            if ref in ledger and ledger[ref].kind in EVIDENCE_KINDS
         ][:1]
         statement = str(item.get("statement", "")).strip()
         doc_id = str(item.get("source_doc_id", ""))
@@ -273,7 +311,7 @@ def rerank_one(
             direction_vectors = list(embedding.encode(profile.target_directions))
         if ledger:
             statement_vectors = embedding.encode([record.statement for record in ledger.values()])
-            record_vectors = dict(zip(ledger.keys(), statement_vectors))
+            record_vectors = dict(zip(ledger.keys(), statement_vectors, strict=False))
 
     # ---- 规则证据：始终计算，供 rule / hybrid 使用 ----
     rule_points: list[MatchPoint] = []
@@ -321,7 +359,7 @@ def rerank_one(
         if any(
             _content_overlap(admission.direction, tag) >= 1
             or _cosine(admission_vector, vector) >= threshold
-            for tag, vector in zip(matched_tags, matched_tag_vectors)
+            for tag, vector in zip(matched_tags, matched_tag_vectors, strict=False)
         ):
             continue
 
@@ -348,7 +386,10 @@ def rerank_one(
                 advisor_refs=[
                     SourceRef(
                         doc_id=admission.source,
-                        locator=f"{admission.year} 招生目录 / {admission.program_code} {admission.direction_code}",
+                        locator=(
+                            f"{admission.year} 招生目录 / "
+                            f"{admission.program_code} {admission.direction_code}"
+                        ),
                         quote=admission.direction,
                     )
                 ],
