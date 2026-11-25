@@ -9,9 +9,29 @@ from advisor_match.product.materials import (
     extract_docx_text,
     extract_pdf_text,
     extract_signature,
+    redact_material,
     statements_from_text,
     upload_token,
 )
+
+ENGLISH_RESUME = """BASIC INFORMATION
+Alex Chen   Phone: +86 138 0000 0004   Email: alex.chen@example.com
+Research interests: computer vision, multimodal learning
+EDUCATION
+Example University, B.Eng. in Computer Science, 2022-2026
+GPA 3.9/4.0, ranked top 5%
+PROJECTS
+Real-time object detection on edge devices: YOLO variant with TensorRT, 45 FPS on Jetson
+Diffusion-based image editing: implemented classifier guidance and evaluation pipeline
+RESEARCH
+Second author, ICCV 2025 paper: Efficient Multimodal Fusion for Video Understanding
+INTERNSHIP
+Computer vision intern at a robotics startup (summer 2025)
+SKILLS
+Python, PyTorch, OpenCV, TensorRT, C++
+AWARDS
+National Scholarship (2024); ACM-ICPC Regional Silver Medal (2023)
+"""
 
 
 def test_strips_bullets_and_numbers() -> None:
@@ -39,6 +59,41 @@ def test_skips_section_titles_and_person_names() -> None:
     text = "科研兴趣\n韩宇轩\n数据库\n机器学习\n完成检索项目"
     statements, _ = statements_from_text(text)
     assert statements == ["数据库", "机器学习", "完成检索项目"]
+
+
+def test_parses_english_resume_and_drops_headers_and_education() -> None:
+    statements, warnings = statements_from_text(ENGLISH_RESUME)
+    joined = "\n".join(statements)
+
+    assert "Real-time object detection" in joined
+    assert "Second author, ICCV 2025" in joined
+    assert "Computer vision intern" in joined
+    assert "Python, PyTorch" in joined
+    assert "National Scholarship" in joined
+
+    assert "Alex Chen" not in joined
+    assert "+86" not in joined
+    assert "alex.chen@example.com" not in joined
+    assert "BASIC INFORMATION" not in joined
+    assert "EDUCATION" not in joined
+    assert "PROJECTS" not in joined
+    assert "GPA" not in joined
+    assert "Example University" not in joined
+    assert any("教育背景" in warning for warning in warnings)
+
+
+def test_extracts_english_signature() -> None:
+    signature = extract_signature(ENGLISH_RESUME)
+    assert signature == "Alex Chen　Example University"
+
+
+def test_redacts_english_name_and_contact() -> None:
+    cleaned, warnings = redact_material(ENGLISH_RESUME)
+    assert "Alex Chen" not in cleaned
+    assert "+86" not in cleaned
+    assert "alex.chen@example.com" not in cleaned
+    assert "computer vision" in cleaned
+    assert warnings
 
 
 def test_upload_token_depends_on_content() -> None:
@@ -105,6 +160,28 @@ def test_extract_pdf_text_and_statements() -> None:
     assert warnings == []
 
 
+def test_pdf_block_lines_keep_english_sections_separate() -> None:
+    fitz = pytest.importorskip("fitz")
+    document = fitz.open()
+    page = document.new_page()
+    lines = [
+        "BASIC INFORMATION",
+        "Alex Chen   Phone: +86 138 0000 0004   Email: alex.chen@example.com",
+        "EDUCATION",
+        "Example University, B.Eng. in Computer Science, 2022-2026",
+        "PROJECTS",
+        "Real-time object detection on edge devices",
+    ]
+    for index, line in enumerate(lines):
+        page.insert_text((72, 72 + index * 24), line)
+    data = document.tobytes()
+    document.close()
+
+    text, _ = extract_pdf_text(data)
+    statements, _ = statements_from_text(text)
+    assert statements == ["Real-time object detection on edge devices"]
+
+
 def test_extract_docx_text_and_tables() -> None:
     import io
 
@@ -144,5 +221,5 @@ def test_blank_pdf_warns_about_scan() -> None:
 
 
 def test_decode_prefers_utf8_then_gb18030() -> None:
-    assert decode_material("中文材料".encode("utf-8")) == "中文材料"
+    assert decode_material("中文材料".encode()) == "中文材料"
     assert decode_material("中文材料".encode("gb18030")) == "中文材料"

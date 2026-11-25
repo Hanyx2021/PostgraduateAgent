@@ -19,6 +19,30 @@ _HEADING = re.compile(r"^\s*#+\s*")
 _CN_SECTION = re.compile(r"^[一二三四五六七八九十]+[、.]\s*")
 _CONTACT = re.compile(r"1[3-9]\d{9}|[\w.+-]+@[\w.-]+|\d{17}[\dXx]")
 
+#: 带标签的联系方式，中英文都常见：``Phone: ...``、``邮箱：...``。
+#: 从标签删到行尾，避免把号码、邮箱或后面的文字留在台账里。
+_CONTACT_LABEL = re.compile(
+    r"(?:电子邮箱|手机号码|联系电话|联系方式|电话|手机|邮箱|地址|"
+    r"e-?mail|phone|mobile|tel|telephone|wechat|weixin|linkedin|github|website|homepage)"
+    r"\s*[:：].*$",
+    re.I,
+)
+_NAME_LABEL = re.compile(r"^(?:姓名|name)\s*[:：]", re.I)
+
+#: 英文姓名：2–3 个首字母大写的单词（"Alex Chen" / "Alex J. Chen"）。
+_LATIN_NAME = re.compile(r"^[A-Z][A-Za-z.'-]*(?:\s+[A-Z][A-Za-z.'-]*){1,2}$")
+#: 这些词开头的两词行更像标题/机构/奖项，不应当成姓名。
+_LATIN_NAME_STOP = {
+    "basic", "personal", "contact", "research", "projects", "skills", "education",
+    "awards", "honors", "summary", "university", "college", "institute", "school",
+    "department", "national", "scholarship", "computer", "vision", "science",
+    "engineering", "information", "machine", "learning", "data", "artificial",
+    "intelligence",
+}
+
+_DEGREE = re.compile(r"\b(?:B\.?Eng|B\.?Sc?|M\.?S|M\.?Eng|Ph\.?D|Bachelor|Master|Doctor)\b", re.I)
+_CN_EDU = re.compile(r"^(?:本科|硕士|博士|研究生|教育背景|教育经历)")
+
 #: 简历里常见的章节名。它们不是成果，解析时必须丢掉。
 _SECTION_TITLES = {
     "基本信息", "个人信息", "联系方式", "个人资料", "教育背景", "教育经历", "学习经历",
@@ -31,7 +55,9 @@ _SECTION_TITLES = {
     "basicinformation", "personalinformation", "contact", "education",
     "educationbackground", "experience", "workexperience", "internship",
     "projects", "projectexperience", "skills", "publications", "awards",
-    "honors", "summary", "researchinterests", "researchexperience",
+    "honors", "summary", "research", "researchinterests", "researchexperience",
+    "researchprojects", "coursework", "certificates", "languages",
+    "extracurricular", "activities", "objective", "profile",
 }
 
 
@@ -50,6 +76,30 @@ def _looks_like_name(line: str) -> bool:
     if not all("一" <= char <= "鿿" for char in text):
         return False
     return text[0] in _SURNAMES
+
+
+def _looks_like_latin_name(line: str) -> bool:
+    """识别 "Alex Chen" 这类英文姓名行；标题、机构、奖项不算。"""
+    text = " ".join(line.split())
+    text = _CONTACT_LABEL.sub("", text).strip(" ,;|")
+    if not 2 <= len(text.split()) <= 3 or len(text) > 40:
+        return False
+    if not _LATIN_NAME.match(text):
+        return False
+    return not any(word.lower() in _LATIN_NAME_STOP for word in text.split())
+
+
+def _is_education_line(line: str) -> bool:
+    """教育背景不是成果；按行解析时直接跳过，避免混进台账。"""
+    text = line.strip()
+    if re.match(r"(?i)^(?:GPA|Education)\b", text):
+        return True
+    if _CN_EDU.match(text) and ("大学" in text or "学院" in text):
+        return True
+    return bool(
+        _DEGREE.search(text)
+        and any(key in text for key in ("University", "College", "Institute"))
+    )
 
 
 def _normalize_heading(line: str) -> str:
@@ -93,19 +143,28 @@ def statements_from_text(
     skipped_long = 0
     duplicates = 0
     removed_contacts = 0
+    skipped_education = 0
 
-    for raw in lines:
+    for line_no, raw in enumerate(lines):
         if _HEADING.match(raw):
             continue
         line = _BULLET.sub("", _CN_SECTION.sub("", raw)).strip()
+        if _CONTACT_LABEL.search(line):
+            line = _CONTACT_LABEL.sub("", line).strip(" ：:，,;|")
+            removed_contacts += 1
+        if not line:
+            continue
         if _is_section_title(line) or _looks_like_name(line):
             continue
+        if line_no < 10 and _looks_like_latin_name(line):
+            continue
         if _CONTACT.search(line):
-            line = _CONTACT.sub("", line).strip(" ：:，,")
+            line = _CONTACT.sub("", line).strip(" ：:，,;|")
             removed_contacts += 1
             if len(line) < 4:
                 continue
-        if not line:
+        if _is_education_line(line):
+            skipped_education += 1
             continue
         if len(line) > max_chars:
             skipped_long += 1
@@ -122,11 +181,41 @@ def statements_from_text(
         warnings.append(f"{duplicates} 行重复，已去重")
     if removed_contacts:
         warnings.append(f"{removed_contacts} 行包含联系方式，已移除")
+    if skipped_education:
+        warnings.append(f"{skipped_education} 行教育背景，已跳过")
     if len(statements) > max_lines:
         warnings.append(f"超过 {max_lines} 条，只保留前 {max_lines} 条")
         statements = statements[:max_lines]
 
     return statements, warnings
+
+
+def _block_chunks(raw: str) -> list[str]:
+    """按块内换行拆开：标题、姓名、联系方式单独成行，段落内的折行仍然合并。"""
+    chunks: list[str] = []
+    buffer: list[str] = []
+
+    def flush() -> None:
+        if buffer:
+            chunks.append(" ".join(buffer))
+            buffer.clear()
+
+    for part in raw.splitlines():
+        line = " ".join(part.split())
+        if not line:
+            continue
+        if (
+            _CONTACT_LABEL.search(line)
+            or _is_section_title(line)
+            or _looks_like_name(line)
+            or _looks_like_latin_name(line)
+        ):
+            flush()
+            chunks.append(line)
+        else:
+            buffer.append(line)
+    flush()
+    return chunks
 
 
 def extract_pdf_text(data: bytes, *, max_pages: int = 20) -> tuple[str, list[str]]:
@@ -152,9 +241,7 @@ def extract_pdf_text(data: bytes, *, max_pages: int = 20) -> tuple[str, list[str
     chunks: list[str] = []
     for index in range(page_limit):
         for block in document[index].get_text("blocks"):
-            text = " ".join(str(block[4]).split())
-            if text:
-                chunks.append(text)
+            chunks.extend(_block_chunks(str(block[4])))
 
     if document.page_count > max_pages:
         warnings.append(f"仅解析前 {max_pages} 页")
@@ -169,7 +256,12 @@ def extract_signature(text: str, *, max_affiliation: int = 30) -> str | None:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     name: str | None = None
 
-    match = re.search(r"(?:姓名|Name)\s*[：:]\s*([一-龥]{2,4})", text, re.I)
+    match = re.search(
+        r"(?:姓名|Name)\s*[：:]\s*"
+        r"([一-龥]{2,4}|[A-Za-z][A-Za-z.'-]*(?:\s+[A-Za-z][A-Za-z.'-]*){0,2})",
+        text,
+        re.I,
+    )
     if match:
         name = match.group(1)
     else:
@@ -178,7 +270,24 @@ def extract_signature(text: str, *, max_affiliation: int = 30) -> str | None:
                 name = line
                 break
     if not name:
+        for line in lines[:10]:
+            if _looks_like_latin_name(line):
+                name = _CONTACT_LABEL.sub("", line).strip(" ,;|")
+                break
+    if not name:
         return None
+
+    if name.isascii():
+        # 英文简历：取 "Example University, B.Eng. ..." 里逗号前的机构名
+        for line in lines[:15]:
+            cleaned = _CONTACT_LABEL.sub("", line).strip(" ：:，,;|")
+            if not re.search(r"(?:University|College|Institute|Department|School)", cleaned, re.I):
+                continue
+            candidate = cleaned.split(",")[0].strip()
+            candidate = re.split(r"\s*\d", candidate)[0].strip(" ,;|-")
+            if candidate and len(candidate) <= max_affiliation:
+                return f"{name}　{candidate}"
+        return name
 
     for line in lines[:15]:
         if line == name:
@@ -228,9 +337,20 @@ def redact_material(text: str) -> tuple[str, list[str]]:
     """发给模型前去掉姓名行与联系方式。只处理文本，不保存原文。"""
     lines: list[str] = []
     removed = 0
-    for raw in text.splitlines():
+    for line_no, raw in enumerate(text.splitlines()):
         line = raw.rstrip()
+        if _NAME_LABEL.match(line.strip()):
+            removed += 1
+            continue
+        if _CONTACT_LABEL.search(line):
+            line = _CONTACT_LABEL.sub("", line).strip(" ：:，,;|")
+            removed += 1
+        if not line.strip():
+            continue
         if _looks_like_name(line.strip()):
+            removed += 1
+            continue
+        if line_no < 10 and _looks_like_latin_name(line.strip()):
             removed += 1
             continue
         if _CONTACT.search(line):

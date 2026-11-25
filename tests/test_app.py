@@ -296,6 +296,24 @@ def test_new_upload_replaces_ledger_and_invalidates_match(
     assert any("材料已更新" in info.value for info in app.info)
 
 
+def test_uploaded_english_pdf_is_parsed(advisors_file: Path, tmp_path: Path) -> None:
+    lines = [
+        "Alex Chen   Phone: +86 138 0000 0004   Email: alex.chen@example.com",
+        "EDUCATION",
+        "Example University, B.Eng. in Computer Science, 2022-2026",
+        "PROJECTS",
+        "Real-time object detection on edge devices",
+    ]
+    content = make_pdf(tmp_path / "en.pdf", lines)
+    app = upload(AppTest.from_file(str(APP), default_timeout=30).run(), "en.pdf", content)
+
+    value = app.text_area(key="statements").value
+    assert "Real-time object detection" in value
+    assert "EDUCATION" not in value
+    assert "Example University" not in value
+    assert app.session_state["suggested_signature"] == "Alex Chen　Example University"
+
+
 def test_pdf_without_text_names_the_file(advisors_file: Path, tmp_path: Path) -> None:
     content = make_pdf(tmp_path / "scan.pdf")
     app = upload(AppTest.from_file(str(APP), default_timeout=30).run(), "scan.pdf", content)
