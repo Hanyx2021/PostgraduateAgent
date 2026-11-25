@@ -65,6 +65,24 @@ st.markdown(
 
 DEFAULT_DATA = os.getenv("AM_ADVISORS_PATH", "data/processed/advisors.jsonl")
 
+# 台账解析与草稿生成都是同步阻塞的：先用一次 rerun 渲染“禁用”状态，再执行调用。
+BUSY = bool(
+    st.session_state.get("pending_generation")
+    or st.session_state.get("pending_extract")
+)
+
+# 解析结果在控件创建之前写入，避免“widget 实例化后不能再改 session_state”。
+upload_result = st.session_state.pop("upload_result", None)
+if upload_result is not None:
+    st.session_state["statements"] = upload_result["statements"]
+    if upload_result.get("targets"):
+        current_targets = st.session_state.get("targets", "")
+        if (
+            not current_targets.strip()
+            or current_targets == upload_result.get("targets_before")
+        ):
+            st.session_state["targets"] = upload_result["targets"]
+
 # 能力默认自动启用：有 key 用模型，有本地模型用向量；测试用环境变量关闭。
 USE_VECTOR = os.getenv("AM_DISABLE_VECTOR", "0") != "1"
 USE_LLM = bool(settings.llm_api_key) and os.getenv("AM_DISABLE_LLM", "0") != "1"
@@ -184,15 +202,127 @@ st.caption("依据公开可核验的信息匹配，依据你本人的材料写�
 # 解析台账时在主区域常驻状态条；解析完成或重跑后自动消失。
 upload_status = st.empty()
 
+
+def process_upload(
+    name: str, raw: bytes, token: str, file_key: tuple[str, str]
+) -> None:
+    """解析上传文件并写入会话状态。
+
+    调用时 ``pending_extract`` 已让分区导航锁定；失败也要清掉该标记，
+    否则导航会一直停在不可点击的状态。
+    """
+    try:
+        extra_warnings: list[str] = []
+        suffix = name.lower().rsplit(".", 1)[-1]
+        if suffix == "pdf":
+            text, extra_warnings = extract_pdf_text(raw)
+        elif suffix == "docx":
+            text, extra_warnings = extract_docx_text(raw)
+        else:
+            text = decode_material(raw)
+
+        suggested_signature = extract_signature(text)
+        st.session_state["suggested_signature"] = suggested_signature
+        new_targets: str | None = None
+        targets_before: str | None = None
+
+        if USE_LLM_EXTRACT and settings.llm_api_key:
+            with upload_status.status(
+                "模型正在整理台账，约 10–30 秒，请勿关闭页面…",
+                expanded=False,
+            ) as status:
+                result = extract_records(text, get_client())
+                status.update(
+                    label=f"台账整理完成：{len(result.records)} 条",
+                    state="complete",
+                )
+            parsed = [record.statement for record in result.records]
+            warnings = list(result.warnings)
+            summary = f"模型整理完成：{len(result.records)} 条台账，引文已逐条校验"
+            st.session_state["uploaded_records"] = [
+                record.model_dump(mode="json") for record in result.records
+            ]
+            st.session_state["uploaded_snapshot"] = parsed
+
+            # 自动填目标方向，但不覆盖用户手改过的内容
+            suggested = ", ".join(result.directions)
+            if suggested:
+                current = st.session_state.get("targets", "")
+                previous = st.session_state.get("targets_autofilled", "")
+                if not current.strip() or current == previous:
+                    new_targets = suggested
+                    targets_before = current
+                    st.session_state["targets_autofilled"] = suggested
+                    st.session_state["targets_note"] = "已根据材料自动填写目标方向，可以直接修改。"
+        else:
+            parsed, warnings = statements_from_text(text)
+            summary = f"按行解析：{len(parsed)} 条陈述"
+            st.session_state.pop("uploaded_records", None)
+            st.session_state.pop("uploaded_snapshot", None)
+    except Exception as error:  # noqa: BLE001 - 解析失败要留下线索，不能静默留空
+        print(f"[upload] parse failed: {type(error).__name__}: {error}", file=sys.stderr)
+        st.session_state["upload_summary"] = "上传文件解析失败"
+        st.session_state["upload_warnings"] = [
+            f"解析失败（{type(error).__name__}），请重新上传，或在左侧手动填写成果陈述"
+        ]
+        st.session_state["upload_failed"] = file_key
+        st.session_state.pop("uploaded_records", None)
+        st.session_state.pop("uploaded_snapshot", None)
+    else:
+        st.session_state["upload_failed"] = None
+        # statements / targets 是控件 key，等下一次运行、控件创建前再写入。
+        st.session_state["upload_result"] = {
+            "statements": "\n".join(parsed),
+            "targets": new_targets,
+            "targets_before": targets_before,
+        }
+        st.session_state["upload_summary"] = summary
+        st.session_state["upload_token"] = token
+        st.session_state["upload_warnings"] = [*extra_warnings, *warnings]
+
+        # 台账立刻换成新材料；旧的匹配与草稿作废，等学生重新点匹配。
+        stored = st.session_state.get("uploaded_records")
+        if stored:
+            st.session_state["ledger"] = {
+                item["id"]: LedgerRecord.model_validate(item) for item in stored
+            }
+        elif parsed:
+            st.session_state["ledger"] = build_profile([], [], parsed)[1]
+        else:
+            st.session_state["ledger"] = {}
+        for stale in (
+            "result",
+            "profile",
+            "index_size",
+            "index_skipped",
+            "vector_on",
+            "logs",
+            "data_source",
+            "drafts",
+            "draft",
+            "contact",
+            "revision",
+            "edited_total",
+            "confirmation",
+        ):
+            st.session_state.pop(stale, None)
+    finally:
+        st.session_state.pop("pending_extract", None)
+
+
 with st.sidebar:
     st.subheader("你的材料")
+    # 上传控件不置灰：解析期间要保留它的文件状态，其余控件全部禁用。
     uploaded = st.file_uploader(
         "上传简历（必填，PDF / DOCX / txt / md）",
         type=["txt", "md", "pdf", "docx"],
         key="materials_upload",
         help="上传后会解析成台账；PDF 若为扫描版可能没有文字层。",
     )
-    if uploaded is not None:
+    if (
+        uploaded is not None
+        and st.session_state.get("pending_extract") is None
+    ):
         token = ""
         try:
             raw = uploaded.getvalue()
@@ -214,96 +344,14 @@ with st.sidebar:
             and st.session_state.get("upload_token") != token
             and st.session_state.get("upload_failed") != file_key
         ):
-            try:
-                extra_warnings: list[str] = []
-                suffix = uploaded.name.lower().rsplit(".", 1)[-1]
-                if suffix == "pdf":
-                    text, extra_warnings = extract_pdf_text(raw)
-                elif suffix == "docx":
-                    text, extra_warnings = extract_docx_text(raw)
-                else:
-                    text = decode_material(raw)
-
-                suggested_signature = extract_signature(text)
-                st.session_state["suggested_signature"] = suggested_signature
-
-                if USE_LLM_EXTRACT and settings.llm_api_key:
-                    with upload_status.status(
-                        "模型正在整理台账，约 10–30 秒，请勿关闭页面…",
-                        expanded=False,
-                    ) as status:
-                        result = extract_records(text, get_client())
-                        status.update(
-                            label=f"台账整理完成：{len(result.records)} 条",
-                            state="complete",
-                        )
-                    parsed = [record.statement for record in result.records]
-                    warnings = list(result.warnings)
-                    summary = f"模型整理完成：{len(result.records)} 条台账，引文已逐条校验"
-                    st.session_state["uploaded_records"] = [
-                        record.model_dump(mode="json") for record in result.records
-                    ]
-                    st.session_state["uploaded_snapshot"] = parsed
-
-                    # 自动填目标方向，但不覆盖用户手改过的内容
-                    suggested = ", ".join(result.directions)
-                    if suggested:
-                        current = st.session_state.get("targets", "")
-                        previous = st.session_state.get("targets_autofilled", "")
-                        if not current.strip() or current == previous:
-                            st.session_state["targets"] = suggested
-                            st.session_state["targets_autofilled"] = suggested
-                            st.session_state["targets_note"] = (
-                                "已根据材料自动填写目标方向，可以直接修改。"
-                            )
-                else:
-                    parsed, warnings = statements_from_text(text)
-                    summary = f"按行解析：{len(parsed)} 条陈述"
-                    st.session_state.pop("uploaded_records", None)
-                    st.session_state.pop("uploaded_snapshot", None)
-            except Exception as error:  # noqa: BLE001 - 解析失败要留下线索，不能静默留空
-                print(f"[upload] parse failed: {type(error).__name__}: {error}", file=sys.stderr)
-                st.session_state["upload_summary"] = "上传文件解析失败"
-                st.session_state["upload_warnings"] = [
-                    f"解析失败（{type(error).__name__}），请重新上传，或在左侧手动填写成果陈述"
-                ]
-                st.session_state["upload_failed"] = file_key
-                st.session_state.pop("uploaded_records", None)
-                st.session_state.pop("uploaded_snapshot", None)
-            else:
-                st.session_state["upload_failed"] = None
-                st.session_state["statements"] = "\n".join(parsed)
-                st.session_state["upload_summary"] = summary
-                st.session_state["upload_token"] = token
-                st.session_state["upload_warnings"] = [*extra_warnings, *warnings]
-
-                # 台账立刻换成新材料；旧的匹配与草稿作废，等学生重新点匹配。
-                stored = st.session_state.get("uploaded_records")
-                if stored:
-                    st.session_state["ledger"] = {
-                        item["id"]: LedgerRecord.model_validate(item) for item in stored
-                    }
-                elif parsed:
-                    st.session_state["ledger"] = build_profile([], [], parsed)[1]
-                else:
-                    st.session_state["ledger"] = {}
-                for stale in (
-                    "result",
-                    "profile",
-                    "index_size",
-                    "index_skipped",
-                    "vector_on",
-                    "logs",
-                    "data_source",
-                    "drafts",
-                    "draft",
-                    "contact",
-                    "revision",
-                    "edited_total",
-                    "confirmation",
-                ):
-                    st.session_state.pop(stale, None)
-                st.rerun()
+            # 先 rerun 一次渲染禁用状态，再在下一轮解析台账。
+            st.session_state["pending_extract"] = {
+                "token": token,
+                "name": uploaded.name,
+                "raw": raw,
+                "file_key": file_key,
+            }
+            st.rerun()
 
     if st.session_state.get("upload_summary"):
         st.caption(st.session_state["upload_summary"])
@@ -343,11 +391,28 @@ with st.sidebar:
     st.caption(f"召回上限 {settings.retrieval.recall_k}，主榜 {settings.retrieval.keep_k}")
     st.caption("本应用不具备发信权限。")
 
-if start:
-    statements = [line.strip() for line in statement_text.splitlines() if line.strip()]
-    targets = [item.strip() for item in target_text.split(",") if item.strip()]
-    interests = [item.strip() for item in interest_text.split(",") if item.strip()]
+statements = [line.strip() for line in statement_text.splitlines() if line.strip()]
+targets = [item.strip() for item in target_text.split(",") if item.strip()]
+interests = [item.strip() for item in interest_text.split(",") if item.strip()]
 
+# 匹配、解析台账或生成草稿进行中，只锁住分区导航。
+section = st.radio(
+    "页面",
+    ["① 材料与台账", "② 导师匹配", "③ 邮件草稿"],
+    horizontal=True,
+    label_visibility="collapsed",
+    key="section",
+    disabled=bool(start and statements) or BUSY,
+)
+
+pending = st.session_state.get("pending_extract")
+if pending is not None:
+    process_upload(
+        pending["name"], pending["raw"], pending["token"], pending["file_key"]
+    )
+    st.rerun()
+
+if start:
     if uploaded is None and not statements:
         st.error("请先上传简历 PDF；如果没有文件，也可以手动填写成果陈述。")
     elif not statements:
@@ -392,11 +457,11 @@ if start:
                 llm=get_client() if USE_LLM_RERANK else None,
                 rerank_mode="hybrid",
             )
-        if database_source == "演示数据":
-            st.warning("未找到导师数据文件，当前使用两位虚构导师演示。")
         matched_count = len(result.core) + len(result.adjacent) + len(result.needs_support)
         extra = f"，另有 {len(result.recall_only)} 位仅方向相关" if result.recall_only else ""
-        st.toast(f"匹配完成：{matched_count} 位导师进入推荐{extra}。", icon="✅")
+        st.session_state["match_toast"] = (
+            f"匹配完成：{matched_count} 位导师进入推荐{extra}。"
+        )
 
         st.session_state.update(
             {
@@ -413,17 +478,16 @@ if start:
         st.session_state["drafts"] = {}
         for stale in ("draft", "contact", "revision", "edited_total", "confirmation"):
             st.session_state.pop(stale, None)
+        # 重跑一次：重新渲染已启用的分区导航，并显示上一步准备的完成提示。
+        st.rerun()
 
 result = st.session_state.get("result")
 ledger = st.session_state.get("ledger") or {}
 
-section = st.radio(
-    "页面",
-    ["① 材料与台账", "② 导师匹配", "③ 邮件草稿"],
-    horizontal=True,
-    label_visibility="collapsed",
-    key="section",
-)
+if result is not None and st.session_state.get("database_source") == "演示数据":
+    st.warning("未找到导师数据文件，当前使用两位虚构导师演示。")
+if message := st.session_state.pop("match_toast", None):
+    st.toast(message, icon="✅")
 
 if section == "① 材料与台账":
     st.subheader("成果台账")
@@ -541,7 +605,9 @@ if section == "③ 邮件草稿":
             if suggested:
                 st.caption("署名已根据简历自动填写，可直接修改。")
             points_text = st.text_area(
-                "你自己的想法（每行一句，只保留能对上台账的句子）", height=90, key="points"
+                "你自己的想法（每行一句，只保留能对上台账的句子）",
+                height=90,
+                key="points",
             )
             generate = st.button("生成草稿", key="generate_draft")
 
@@ -549,44 +615,72 @@ if section == "③ 邮件草稿":
                 if not advisor.email:
                     st.error("该导师邮箱未收录，无法确定收件人。")
                 else:
-                    contact = AdvisorContact(display_name=advisor.name, email=advisor.email)
-                    message = (
-                        "模型正在生成草稿，约 10–20 秒，请勿关闭页面…"
-                        if USE_LLM
-                        else "正在生成草稿…"
-                    )
-                    try:
-                        with st.spinner(message):
-                            email_result = run_email(
-                                match,
-                                contact,
-                                ledger,
-                                student_points=[
-                                    line.strip()
-                                    for line in points_text.splitlines()
-                                    if line.strip()
-                                ],
-                                student_signature=signature,
-                                llm=get_client() if USE_LLM else None,
-                            )
-                    except RecipientMismatch as error:
-                        st.error(f"收件人核对未通过：{error}")
-                    else:
-                        st.session_state["draft_seq"] = (
-                            st.session_state.get("draft_seq", 0) + 1
+                    # 先记住输入并 rerun：下一次运行会把控件全部置灰，再开始调用模型。
+                    st.session_state["pending_generation"] = {
+                        "name": name,
+                        "points": points_text,
+                        "signature": signature,
+                    }
+                    st.rerun()
+
+            if st.session_state.get("draft_error"):
+                st.error(st.session_state.pop("draft_error"))
+
+            pending = st.session_state.get("pending_generation")
+            if pending:
+                name = pending["name"]
+                match = selected[names.index(name)]
+                advisor = match.advisor
+                contact = AdvisorContact(display_name=advisor.name, email=advisor.email)
+                message = (
+                    "模型正在生成草稿，约 10–20 秒，请勿关闭页面…"
+                    if USE_LLM
+                    else "正在生成草稿…"
+                )
+                try:
+                    with st.spinner(message):
+                        email_result = run_email(
+                            match,
+                            contact,
+                            ledger,
+                            student_points=[
+                                line.strip()
+                                for line in pending["points"].splitlines()
+                                if line.strip()
+                            ],
+                            student_signature=pending["signature"],
+                            llm=get_client() if USE_LLM else None,
                         )
-                        entry = {
-                            "result": email_result,
-                            "contact": contact,
-                            "generation": st.session_state["draft_seq"],
-                            "revision": 0,
-                            "edited_total": 0,
-                            "confirmation": None,
-                        }
-                        drafts[name] = entry
-                        # 生成和渲染分开：先结束本次运行，再由下一次运行一次性铺开草稿，
-                        # 避免长草稿在模型调用结束后边生成边往下刷。
-                        st.rerun()
+                except RecipientMismatch as error:
+                    st.session_state["draft_error"] = f"收件人核对未通过：{error}"
+                    st.session_state.pop("pending_generation", None)
+                    st.rerun()
+                except Exception as error:  # noqa: BLE001 - 失败也要恢复可点击状态
+                    print(
+                        f"[draft] generation failed: {type(error).__name__}: {error}",
+                        file=sys.stderr,
+                    )
+                    st.session_state["draft_error"] = (
+                        f"生成失败（{type(error).__name__}），请重试。"
+                    )
+                    st.session_state.pop("pending_generation", None)
+                    st.rerun()
+                else:
+                    st.session_state["draft_seq"] = (
+                        st.session_state.get("draft_seq", 0) + 1
+                    )
+                    entry = {
+                        "result": email_result,
+                        "contact": contact,
+                        "generation": st.session_state["draft_seq"],
+                        "revision": 0,
+                        "edited_total": 0,
+                        "confirmation": None,
+                    }
+                    drafts[name] = entry
+                    st.session_state.pop("pending_generation", None)
+                    # 生成和渲染分开：下一次运行一次性铺开草稿，避免边生成边往下刷。
+                    st.rerun()
 
             if entry is not None:
                 if st.button("清除该导师草稿", key="clear_draft"):
