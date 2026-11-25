@@ -30,6 +30,7 @@ from advisor_match.product.export import confirmation_json, match_result_json
 from advisor_match.product.extraction import extract_records
 from advisor_match.product.materials import (
     decode_material,
+    extract_docx_text,
     extract_pdf_text,
     extract_signature,
     statements_from_text,
@@ -163,8 +164,8 @@ with st.sidebar:
 
     st.subheader("你的材料")
     uploaded = st.file_uploader(
-        "上传简历（必填，PDF / txt / md）",
-        type=["txt", "md", "pdf"],
+        "上传简历（必填，PDF / DOCX / txt / md）",
+        type=["txt", "md", "pdf", "docx"],
         key="materials_upload",
         help="上传后会解析成台账；PDF 若为扫描版可能没有文字层。",
     )
@@ -173,8 +174,11 @@ with st.sidebar:
         token = upload_token(uploaded.name, uploaded.size, raw)
         if st.session_state.get("upload_token") != token:
             extra_warnings: list[str] = []
-            if uploaded.name.lower().endswith(".pdf"):
+            suffix = uploaded.name.lower().rsplit(".", 1)[-1]
+            if suffix == "pdf":
                 text, extra_warnings = extract_pdf_text(raw)
+            elif suffix == "docx":
+                text, extra_warnings = extract_docx_text(raw)
             else:
                 text = decode_material(raw)
 

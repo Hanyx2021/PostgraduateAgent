@@ -39,8 +39,20 @@ def _bigrams(text: str) -> set[str]:
     return {cleaned[index : index + 2] for index in range(len(cleaned) - 1)}
 
 
+#: 这些二元组太泛，不能作为"方向相关"的证据（如"计算机"与"计算社会学"）。
+STOP_BIGRAMS = {
+    "计算", "信息", "系统", "科学", "技术", "研究", "学习",
+    "方法", "工程", "大学", "本科", "专业", "学院",
+}
+
+
 def _overlap(left: str, right: str) -> int:
     return len(_bigrams(left) & _bigrams(right))
+
+
+def _content_overlap(left: str, right: str) -> int:
+    """去掉通用词后再看重合，避免"计算机""信息"这类词制造假相关。"""
+    return len((_bigrams(left) - STOP_BIGRAMS) & (_bigrams(right) - STOP_BIGRAMS))
 
 
 def _student_text(profile: StudentProfile) -> str:
@@ -65,6 +77,10 @@ def recall_only_match(advisor: Advisor) -> AdvisorMatch:
     )
 
 
+def _short(text: str, limit: int = 60) -> str:
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
 def _teacher_name(name: str) -> str:
     return name if name.endswith("老师") else f"{name}老师"
 
@@ -87,7 +103,10 @@ def _supporting_record(
     best_score = (0, 0.0)
     threshold = settings.retrieval.rerank_min_similarity
     for record in ledger.values():
-        lexical = _overlap(tag, record.statement)
+        # 教育背景不是研究方向证据
+        if record.kind == "education":
+            continue
+        lexical = _content_overlap(tag, record.statement)
         semantic = _cosine(tag_vector, (record_vectors or {}).get(record.id))
         score = (lexical, semantic)
         if score > best_score:
@@ -162,7 +181,11 @@ def _llm_points(
     for item in data.get("match_points", [])[:2]:
         if not isinstance(item, dict):
             continue
-        refs = [ref for ref in item.get("student_ledger_refs", []) if ref in ledger][:1]
+        refs = [
+            ref
+            for ref in item.get("student_ledger_refs", [])
+            if ref in ledger and ledger[ref].kind != "education"
+        ][:1]
         statement = str(item.get("statement", "")).strip()
         doc_id = str(item.get("source_doc_id", ""))
         quote = str(item.get("advisor_quote", "")).strip()
@@ -257,7 +280,7 @@ def rerank_one(
     matched_tags: list[str] = []
     matched_tag_vectors: list[np.ndarray | None] = []
     for position, tag in enumerate(advisor.research_tags):
-        lexical = _overlap(tag, student_text)
+        lexical = _content_overlap(tag, student_text)
         tag_vector = tag_vectors[position] if tag_vectors is not None else None
         semantic = _cosine(tag_vector, student_vector)
         if lexical < 1 and semantic < threshold:
@@ -271,7 +294,7 @@ def rerank_one(
 
         relation = "在语义上相近" if used_semantic else "相关"
         statement = (
-            f"你的成果「{record.statement[:40]}」与{_teacher_name(advisor.name)}的研究方向"
+            f"你的成果「{_short(record.statement)}」与{_teacher_name(advisor.name)}的研究方向"
             f"「{tag}」{relation}"
         )
         rule_points.append(
@@ -288,7 +311,7 @@ def rerank_one(
             break
 
     for position, admission in enumerate(advisor.admissions):
-        lexical = _overlap(admission.direction, student_text)
+        lexical = _content_overlap(admission.direction, student_text)
         admission_vector = (
             admission_vectors[position] if admission_vectors is not None else None
         )
@@ -296,7 +319,7 @@ def rerank_one(
         if lexical < 1 and semantic < threshold:
             continue
         if any(
-            _overlap(admission.direction, tag) >= 1
+            _content_overlap(admission.direction, tag) >= 1
             or _cosine(admission_vector, vector) >= threshold
             for tag, vector in zip(matched_tags, matched_tag_vectors)
         ):
@@ -314,7 +337,7 @@ def rerank_one(
         relation = "在语义上相近" if used_semantic else "相关"
         note = "（该方向仅推免）" if admission.only_recommendation else ""
         statement = (
-            f"你的成果「{record.statement[:40]}」与{_teacher_name(advisor.name)}在 "
+            f"你的成果「{_short(record.statement)}」与{_teacher_name(advisor.name)}在 "
             f"{admission.year} 年招生目录中的「{admission.direction}」方向{relation}{note}"
         )
         rule_points.append(
@@ -351,7 +374,7 @@ def rerank_one(
     covered_flags = []
     for index, direction in enumerate(profile.target_directions):
         covered = any(
-            _overlap(direction, tag) >= 1
+            _content_overlap(direction, tag) >= 1
             or (
                 direction_vectors is not None
                 and tag_vectors is not None
@@ -359,7 +382,7 @@ def rerank_one(
             )
             for tag_index, tag in enumerate(advisor.research_tags)
         ) or any(
-            _overlap(direction, admission.direction) >= 1
+            _content_overlap(direction, admission.direction) >= 1
             or (
                 direction_vectors is not None
                 and admission_vectors is not None

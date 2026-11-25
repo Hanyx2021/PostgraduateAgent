@@ -6,6 +6,7 @@ import pytest
 
 from advisor_match.product.materials import (
     decode_material,
+    extract_docx_text,
     extract_pdf_text,
     extract_signature,
     statements_from_text,
@@ -102,6 +103,32 @@ def test_extract_pdf_text_and_statements() -> None:
     statements, _ = statements_from_text(text)
     assert any("multimodal retrieval" in statement for statement in statements)
     assert warnings == []
+
+
+def test_extract_docx_text_and_tables() -> None:
+    import io
+
+    from docx import Document
+
+    document = Document()
+    document.add_heading("基本信息", level=1)
+    document.add_paragraph("完成检索课程项目")
+    table = document.add_table(rows=1, cols=1)
+    table.cell(0, 0).text = "技能：Python"
+    buffer = io.BytesIO()
+    document.save(buffer)
+
+    text, warnings = extract_docx_text(buffer.getvalue())
+    assert "基本信息" in text
+    assert "完成检索课程项目" in text
+    assert "技能：Python" in text
+    assert warnings == []
+
+
+def test_corrupted_docx_returns_warning() -> None:
+    text, warnings = extract_docx_text(b"not a docx")
+    assert text == ""
+    assert warnings
 
 
 def test_blank_pdf_warns_about_scan() -> None:

@@ -67,6 +67,69 @@ def test_weak_overlap_is_needs_support() -> None:
     assert match.tier == "needs_support"
 
 
+def test_education_record_is_not_research_evidence() -> None:
+    advisor = make_advisor(["知识图谱与语义计算"])
+    profile = StudentProfile(
+        ledger=[
+            LedgerRecord(
+                id="L-0001",
+                kind="education",
+                statement="示例大学计算机科学与技术系本科，2021.09-2025.06，GPA 3.7/4.0",
+                evidence=[SourceRef(doc_id="r", locator="p1", quote="示例大学计算机科学与技术系本科")],
+            )
+        ],
+        target_directions=["知识图谱"],
+    )
+    assert rerank_one(profile, advisor) is None
+
+
+def test_llm_cannot_cite_education_record() -> None:
+    advisor = make_advisor(["信息检索"])
+    profile = StudentProfile(
+        ledger=[
+            LedgerRecord(
+                id="L-0001",
+                kind="education",
+                statement="示例大学计算机科学与技术系本科",
+                evidence=[SourceRef(doc_id="r", locator="p1", quote="示例大学")],
+            )
+        ],
+        target_directions=["信息检索"],
+    )
+    llm = FakeLLM(llm_response(quote="信息检索", statement="模型判断"))
+    assert rerank_one(profile, advisor, llm=llm) is None
+
+
+def test_project_record_is_used_instead_of_education() -> None:
+    advisor = make_advisor(["知识图谱与语义计算"])
+    profile = StudentProfile(
+        ledger=[
+            LedgerRecord(
+                id="L-0001",
+                kind="education",
+                statement="示例大学计算机科学与技术系本科",
+                evidence=[SourceRef(doc_id="r", locator="p1", quote="示例大学")],
+            ),
+            LedgerRecord(
+                id="L-0002",
+                kind="course_project",
+                statement="完成知识图谱构建与问答项目",
+                evidence=[SourceRef(doc_id="r", locator="p2", quote="知识图谱构建")],
+            ),
+        ],
+        target_directions=["知识图谱"],
+    )
+    match = rerank_one(profile, advisor)
+    assert match is not None
+    assert match.match_points[0].student_ledger_refs == ["L-0002"]
+
+
+def test_generic_words_do_not_create_match() -> None:
+    advisor = make_advisor(["社会计算与计算社会科学"])
+    profile = make_profile(["多模态检索"], "完成多模态检索增强项目")
+    assert rerank_one(profile, advisor) is None
+
+
 def test_advisor_without_source_is_not_ranked() -> None:
     profile = make_profile(["信息检索"], "做过信息检索课程项目")
     assert rerank_one(profile, make_advisor(["信息检索"], with_source=False)) is None

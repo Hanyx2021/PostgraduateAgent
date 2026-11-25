@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import re
 
 MAX_LINES = 50
@@ -201,6 +202,28 @@ def extract_signature(text: str, *, max_affiliation: int = 30) -> str | None:
     return name
 
 
+def extract_docx_text(data: bytes) -> tuple[str, list[str]]:
+    """抽取 DOCX 正文与表格单元格。"""
+    try:
+        from docx import Document
+    except ImportError:
+        return "", ["未安装 python-docx，无法解析 DOCX"]
+
+    try:
+        document = Document(io.BytesIO(data))
+    except Exception as error:  # noqa: BLE001 - 损坏文件不应让界面崩溃
+        return "", [f"DOCX 打开失败：{type(error).__name__}"]
+
+    parts = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
+    for table in document.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                text = cell.text.strip()
+                if text:
+                    parts.append(text)
+    return "\n".join(parts), []
+
+
 def redact_material(text: str) -> tuple[str, list[str]]:
     """发给模型前去掉姓名行与联系方式。只处理文本，不保存原文。"""
     lines: list[str] = []
@@ -235,6 +258,7 @@ def decode_material(raw: bytes) -> str:
 
 __all__ = [
     "decode_material",
+    "extract_docx_text",
     "extract_pdf_text",
     "extract_signature",
     "redact_material",
