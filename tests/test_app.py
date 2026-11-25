@@ -62,6 +62,8 @@ def advisors_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     )
     monkeypatch.setenv("AM_ADVISORS_PATH", str(path))
     monkeypatch.setenv("AM_CONFIRMATIONS_PATH", str(tmp_path / "confirmations.jsonl"))
+    monkeypatch.setenv("AM_DISABLE_VECTOR", "1")
+    monkeypatch.setenv("AM_DISABLE_LLM", "1")
     return path
 
 
@@ -74,8 +76,6 @@ def run_matching_flow(
     app: AppTest, target: str = "信息检索", statement: str = "完成信息检索方向的课程项目"
 ) -> AppTest:
     # 测试里关掉向量模型，避免加载 95MB 模型
-    app.checkbox(key="use_vector").uncheck()
-    app.checkbox(key="use_llm").uncheck()
     app.run()
     app.text_input(key="targets").set_value(target)
     app.text_area(key="statements").set_value(statement)
@@ -87,14 +87,18 @@ def test_app_renders_without_exception(advisors_file: Path) -> None:
     app = AppTest.from_file(str(APP), default_timeout=30).run()
     assert not app.exception
     assert app.radio(key="section").options == ["① 材料与台账", "② 导师匹配", "③ 邮件草稿"]
+    # 首屏不加载导师索引，提示与页面同时出现
+    assert any("开始匹配" in info.value for info in app.info)
 
 
 def test_matching_shows_tiers_and_provenance(advisors_file: Path) -> None:
     app = run_matching_flow(AppTest.from_file(str(APP), default_timeout=30).run())
     assert not app.exception
     captions = [caption.value for caption in app.caption]
-    assert any("索引导师 3 位" in caption for caption in captions)
     assert any("核心契合" in item.value for item in app.markdown)
+    # 召回/重排的内部计数不再展示给学生
+    assert not any(caption.startswith(("[recall]", "[rerank]", "[tiers]")) for caption in captions)
+    assert not any("索引导师" in caption for caption in captions)
     # 招生状态只写资格，不写名额
     assert any("名额未公布" in caption for caption in captions)
     assert any("信息截止" in caption for caption in captions)
@@ -112,15 +116,10 @@ def test_generating_draft_shows_evidence_and_confirmation(advisors_file: Path) -
     assert any("校验：保留" in caption for caption in captions)
     assert any(caption.startswith("依据：") for caption in captions)
 
-    # 勾选全部句子后才有"完成确认"
-    for box in app.checkbox:
-        if box.label == "已核对":
-            box.check()
-    app.run()
     app.button(key="confirm_draft").click().run()
 
     assert not app.exception
-    assert any("已留痕" in message.value for message in app.success)
+    assert any("已留痕" in message.value for message in app.toast)
     log = Path(os.environ["AM_CONFIRMATIONS_PATH"])
     assert log.exists() and log.read_text(encoding="utf-8").strip()
 
@@ -137,20 +136,14 @@ def test_sentence_editing_and_deletion(advisors_file: Path) -> None:
     deleters = [item for item in app.checkbox if item.key and item.key.startswith("del-")]
     deleters[1].check()
     app.run()
-    app.button(key="apply_edits").click().run()
+    app.button(key="confirm_draft").click().run()
 
     assert not app.exception
     values = [item.value for item in app.text_area if item.key and item.key.startswith("edit-")]
     assert "我改写后的第一句。" in values
     assert len(values) == len(editors) - 1
 
-    for box in app.checkbox:
-        if box.label == "已核对":
-            box.check()
-    app.run()
-    app.button(key="confirm_draft").click().run()
-
-    assert any("已留痕" in message.value for message in app.success)
+    assert any("已留痕" in message.value for message in app.toast)
     log = Path(os.environ["AM_CONFIRMATIONS_PATH"])
     record = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
     assert record["student_edit_ratio"] > 0
@@ -190,16 +183,11 @@ def test_regenerating_draft_resets_widget_state(advisors_file: Path) -> None:
     editors = [item for item in app.text_area if item.key and item.key.startswith("edit-")]
     editors[0].set_value("我改过的句子。")
     app.run()
-    for box in app.checkbox:
-        if box.label == "已核对":
-            box.check()
-    app.run()
 
-    # 重新生成同一导师的草稿：旧的编辑与勾选不能带过来
+    # 重新生成同一导师的草稿：旧的编辑不能带过来
     app.button(key="generate_draft").click().run()
     values = [item.value for item in app.text_area if item.key and item.key.startswith("edit-")]
     assert "我改过的句子。" not in values
-    assert all(not box.value for box in app.checkbox if box.label == "已核对")
 
 
 def test_clear_draft_removes_only_that_advisor(advisors_file: Path) -> None:
@@ -224,8 +212,6 @@ def test_missing_email_blocks_draft(advisors_file: Path) -> None:
 
 def test_missing_resume_and_statements_shows_error(advisors_file: Path) -> None:
     app = AppTest.from_file(str(APP), default_timeout=30).run()
-    app.checkbox(key="use_vector").uncheck()
-    app.checkbox(key="use_llm").uncheck()
     app.run()
     app.button(key="run_matching").click().run()
     assert any("请先上传简历" in error.value for error in app.error)
@@ -233,8 +219,6 @@ def test_missing_resume_and_statements_shows_error(advisors_file: Path) -> None:
 
 def test_target_direction_is_optional(advisors_file: Path) -> None:
     app = AppTest.from_file(str(APP), default_timeout=30).run()
-    app.checkbox(key="use_vector").uncheck()
-    app.checkbox(key="use_llm").uncheck()
     app.run()
     app.text_area(key="statements").set_value("完成信息检索方向的课程项目")
     app.button(key="run_matching").click().run()
@@ -262,12 +246,91 @@ def test_ui_has_no_send_button(advisors_file: Path) -> None:
     assert all("发送" not in label for label in labels)
 
 
+def make_pdf(path: Path, lines: list[str] | None = None) -> bytes:
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page()
+    for index, line in enumerate(lines or []):
+        page.insert_text((50, 60 + index * 18), line, fontsize=10)
+    doc.save(path)
+    doc.close()
+    return path.read_bytes()
+
+
+def upload(app: AppTest, name: str, content: bytes) -> AppTest:
+    app.file_uploader(key="materials_upload").set_value(
+        (name, content, "application/pdf")
+    )
+    app.run()
+    return app
+
+
+def test_uploaded_pdf_fills_statements(advisors_file: Path, tmp_path: Path) -> None:
+    content = make_pdf(tmp_path / "resume.pdf", ["Information retrieval course project"])
+    app = upload(AppTest.from_file(str(APP), default_timeout=30).run(), "resume.pdf", content)
+
+    assert not app.exception
+    assert "Information retrieval course project" in app.text_area(key="statements").value
+    assert any("按行解析" in caption.value for caption in app.caption)
+
+
+def test_new_upload_replaces_ledger_and_invalidates_match(
+    advisors_file: Path, tmp_path: Path
+) -> None:
+    app = run_matching_flow(
+        AppTest.from_file(str(APP), default_timeout=30).run(),
+        target="信息检索",
+        statement="完成信息检索方向的课程项目",
+    )
+    assert app.session_state["result"] is not None
+
+    content = make_pdf(tmp_path / "new.pdf", ["Database course project"])
+    upload(app, "new.pdf", content)
+
+    # 新材料立刻替换台账，旧的推荐与草稿作废，等学生重新匹配
+    assert "Database course project" in app.text_area(key="statements").value
+    goto(app, "① 材料与台账")
+    assert any("Database course project" in item.value for item in app.markdown)
+    goto(app, "② 导师匹配")
+    assert any("材料已更新" in info.value for info in app.info)
+
+
+def test_pdf_without_text_names_the_file(advisors_file: Path, tmp_path: Path) -> None:
+    content = make_pdf(tmp_path / "scan.pdf")
+    app = upload(AppTest.from_file(str(APP), default_timeout=30).run(), "scan.pdf", content)
+    app.button(key="run_matching").click().run()
+
+    assert not app.exception
+    assert any(
+        "已收到《scan.pdf》" in error.value and "扫描版" in error.value
+        for error in app.error
+    )
+
+
+def test_parse_failure_is_reported(
+    advisors_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import advisor_match.product.materials as materials
+
+    def boom(data: bytes) -> tuple[str, list[str]]:
+        raise ValueError("boom")
+
+    monkeypatch.setattr(materials, "extract_pdf_text", boom)
+    content = make_pdf(tmp_path / "resume.pdf", ["Information retrieval course project"])
+    app = upload(AppTest.from_file(str(APP), default_timeout=30).run(), "resume.pdf", content)
+
+    assert not app.exception
+    assert any("解析失败" in caption.value for caption in app.caption)
+    app.button(key="run_matching").click().run()
+    assert any("解析失败" in error.value for error in app.error)
+
+
 def test_missing_data_falls_back_to_demo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AM_ADVISORS_PATH", str(tmp_path / "missing.jsonl"))
+    monkeypatch.setenv("AM_DISABLE_VECTOR", "1")
+    monkeypatch.setenv("AM_DISABLE_LLM", "1")
     app = AppTest.from_file(str(APP), default_timeout=30).run()
-    app.checkbox(key="use_vector").uncheck()
-    app.checkbox(key="use_llm").uncheck()
-    app.run()
     app.text_input(key="targets").set_value("信息检索")
     app.text_area(key="statements").set_value("完成信息检索方向的课程项目")
     app.button(key="run_matching").click().run()

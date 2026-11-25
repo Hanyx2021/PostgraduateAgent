@@ -105,6 +105,16 @@ def test_invalid_llm_output_falls_back_to_line_parser() -> None:
     assert any("退回按行解析" in warning for warning in result.warnings)
 
 
+def test_non_list_records_fall_back_to_line_parser() -> None:
+    llm = FakeLLM(json.dumps({"directions": ["信息检索"], "records": {"bad": True}}, ensure_ascii=False))
+    result = extract_records(RESUME, llm)
+
+    statements = [record.statement for record in result.records]
+    assert "完成多模态检索增强生成的课程项目" in statements
+    assert any("records 不是列表" in warning for warning in result.warnings)
+    assert any("退回按行解析" in warning for warning in result.warnings)
+
+
 def test_duplicate_statements_are_removed() -> None:
     item = {
         "kind": "other",

@@ -55,7 +55,10 @@ def extract_records(
     data = None
     for _ in range(2):
         try:
-            data = _extract_json(llm.complete(system=prompts.EXTRACTION_SYSTEM, user=user))
+            parsed_data = _extract_json(llm.complete(system=prompts.EXTRACTION_SYSTEM, user=user))
+            if not isinstance(parsed_data, dict):
+                raise ValueError("模型输出的 JSON 不是对象")
+            data = parsed_data
             break
         except Exception:  # noqa: BLE001 - 模型不可用/输出异常都进入重试
             continue
@@ -67,8 +70,12 @@ def extract_records(
         raw_directions = data.get("directions", [])
         if isinstance(raw_directions, list):
             directions = [str(item).strip() for item in raw_directions if str(item).strip()][:4]
+        raw_records = data.get("records", [])
+        if not isinstance(raw_records, list):
+            warnings.append("模型返回的 records 不是列表，已忽略")
+            raw_records = []
         seen: set[str] = set()
-        for item in data.get("records", [])[:max_records]:
+        for item in raw_records[:max_records]:
             if not isinstance(item, dict):
                 continue
             quote = str(item.get("quote", "")).strip()
